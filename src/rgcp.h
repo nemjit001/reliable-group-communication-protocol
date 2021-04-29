@@ -10,6 +10,14 @@
 #define RGCP_REMOTE_ADDRESS 0x1
 
 /**
+ * @brief declaration of socket struct containing all relevant rgcp data for a connection
+ */
+struct rgcp_sock
+{
+    //
+};
+
+/**
  * @brief RGCP Packet for in-group communication, lightweight packet suitable for stream protocols, has data transfer capabilities.
  */
 struct rgcp_ingroup_packet

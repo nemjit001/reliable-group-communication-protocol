@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(anpnetstack VERSION 1.0.1 DESCRIPTION "ANP networking stack")
+project(rgcpnetstack VERSION 1.0.1 DESCRIPTION "RGCP development networking stack")
 include(GNUInstallDirs)
 
 set(TARGET_NAME rgcp)
@@ -11,6 +11,17 @@ set(LIBRARY_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/lib/)
 
 add_library(${TARGET_NAME} SHARED
     src/rgcp.c
+    src/init.c
+    src/tap_netdev.c
+    src/utilities.c
+    src/anp_netdev.c
+    src/anpwrapper.c
+    src/arp.c
+    src/subuff.c
+    src/route.c
+    src/timer.c
+    src/ip_rx.c
+    src/ip_tx.c
 )
 
 find_package(Threads)
@@ -20,7 +31,7 @@ target_link_libraries(${TARGET_NAME} dl)
 set_target_properties(${TARGET_NAME} PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION 1
-    PUBLIC_HEADER include/rgcp.h
+    PUBLIC_HEADER include/rgcpnetstack.h
 )
 
 target_include_directories(${TARGET_NAME} PRIVATE src)
