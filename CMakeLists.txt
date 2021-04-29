@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(anpnetstack VERSION 1.0.1 DESCRIPTION "ANP networking stack")
+project(rgcp VERSION 1.0.1 DESCRIPTION "RGCP networking library")
 include(GNUInstallDirs)
 
 set(TARGET_NAME rgcp)

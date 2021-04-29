@@ -3,13 +3,15 @@
 
 #include <sys/socket.h>
 
-// See https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml for reference
-#define IPPROTO_RGCP 254
+/**
+ * @brief Join an existing RGCP group that another host has created.
+ */
+int rgcp_group_connect(int sockfd, struct sockaddr* addr, socklen_t addrlen);
 
 /**
- * @brief Join an RGCP group that other clients can connect to, or connect to a remote address as an RGCP group.
+ * @brief Connect to a remote address and creates a new RGCP group with this client as master
  */
-int rgcp_connect(int sockfd, struct sockaddr* addr, socklen_t addrlen, int flags);
+int rgcp_remote_connect(int sockfd, struct sockaddr* addr, socklen_t addrlen);
 
 /**
  * @brief Leave an RGCP group. If a group's last client disconnects or times out, the group is deleted.
