@@ -5,6 +5,22 @@
 #include <netinet/ip.h>
 #include <sys/socket.h>
 
+enum rgcp_request_type
+{
+    RGCP_GROUP_DISCOVER,
+    RGCP_GROUP_DISCOVER_RESPONSE,
+    RGCP_CREATE_GROUP,
+    RGCP_JOIN_GROUP,
+    RGCP_LEAVE_GROUP,
+    RGCP_NEW_GROUP_MEMBER,
+    RGCP_DELETE_GROUP_MEMBER
+};
+
+struct rgcp_packet
+{
+    enum rgcp_request_type type;
+} __attribute__((packed));
+
 struct rgcp_peer_info
 {
     struct sockaddr_in addr;
