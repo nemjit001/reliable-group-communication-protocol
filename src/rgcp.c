@@ -14,7 +14,23 @@ struct rgcp_socket
     pthread_t middleware_handler_thread_id;
 };
 
-static void thread_registersignals(int *sfd)
+int rgcp_send_middleware_packet(struct rgcp_socket *sock, struct rgcp_packet *packet)
+{
+    ssize_t bytes_sent = send(sock->middlewarefd, (uint8_t *)packet, sizeof(*packet), 0);
+
+    if (bytes_sent < 0)
+    {
+        perror("Error sending to middleware");
+        return -1;
+    }
+
+    if (bytes_sent == 0)
+        return 0;
+
+    return bytes_sent;
+}
+
+void thread_registersignals(int *sfd)
 {
     sigset_t mask;
 
@@ -172,7 +188,22 @@ error:
 
 int rgcp_get_group_info(int sockfd, struct rgcp_group_info **groups, size_t *len)
 {
-    errno = ENOTSUP;
+    struct rgcp_socket *sock = rgcp_find_by_fd(sockfd);
+
+    if (sock == NULL)
+    {
+        errno = ENOTSOCK;
+        return -1;
+    }
+
+    struct rgcp_packet packet;
+
+    // TODO: add extra info here when packet struct is complete
+    packet.type = RGCP_GROUP_DISCOVER;
+
+    if (rgcp_send_middleware_packet(sock, &packet) <= 0)
+        return -1;
+
     return -1;
 }
 
