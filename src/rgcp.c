@@ -3,6 +3,8 @@
 #include "systems_headers.h"
 #include "linklist.h"
 
+#define RGCP_MIDDLEWARE_TIMEOUT 300000
+
 LIST_HEAD(rgcp_groupfd_list);
 
 struct rgcp_socket
@@ -10,7 +12,9 @@ struct rgcp_socket
     struct list_head list;
     int sockfd;
     int middlewarefd;
+    int has_data;
 
+    pthread_mutex_t socket_mtx;
     pthread_t middleware_handler_thread_id;
 };
 
@@ -30,6 +34,27 @@ int rgcp_send_middleware_packet(struct rgcp_socket *sock, struct rgcp_packet *pa
     return bytes_sent;
 }
 
+int rgcp_recv_middleware_packet(struct rgcp_socket *sock, struct rgcp_packet *packet)
+{
+    uint8_t buffer[sizeof(*packet)];
+    memset(buffer, 0, sizeof(buffer));
+
+    ssize_t bytes_received = recv(sock->middlewarefd, buffer, sizeof(buffer), 0);
+
+    if (bytes_received < 0)
+    {
+        perror("Error receiving from middleware");
+        return -1;
+    }
+
+    if (bytes_received == 0)
+        return 0;
+
+    memcpy(packet, buffer, bytes_received);
+
+    return bytes_received;
+}
+
 void thread_registersignals(int *sfd)
 {
     sigset_t mask;
@@ -46,6 +71,32 @@ void thread_registersignals(int *sfd)
     *sfd = signalfd(-1, &mask, 0);
 }
 
+int execute_middleware_request(struct rgcp_socket *sock, struct rgcp_packet *packet)
+{
+    switch(packet->type)
+    {
+        case RGCP_GROUP_DISCOVER_RESPONSE:
+            break;
+        case RGCP_NEW_GROUP_MEMBER:
+            break;
+        case RGCP_DELETE_GROUP_MEMBER:
+            break;
+        default:
+            break;
+    }
+
+    return 0;
+}
+
+int handle_middleware_requests(struct rgcp_socket *sock)
+{
+    struct rgcp_packet packet;
+    if (rgcp_recv_middleware_packet(sock, &packet) < 0)
+        return -1;
+    
+    return execute_middleware_request(sock, &packet);
+}
+
 void *middleware_handler_thread(void *arg)
 {
     struct rgcp_socket *sock = (struct rgcp_socket *)arg;
@@ -57,7 +108,7 @@ void *middleware_handler_thread(void *arg)
 
     if (sfd < 0)
     {
-        perror("Blocking signals failed");
+        perror("Creating sfd failed");
         abort();
     }
 
@@ -83,6 +134,10 @@ void *middleware_handler_thread(void *arg)
         }
 
         // handle incoming middleware requests here
+        if (handle_middleware_requests(sock) < 0)
+        {
+            //TODO: set socket in error state
+        }
     }
 
     printf("[LIB] mw thread stopped\n");
@@ -124,6 +179,21 @@ struct rgcp_socket *rgcp_find_by_fd(int sockfd)
     return NULL;
 }
 
+int wait_with_interupt(int *interupt_signal, useconds_t timeout)
+{
+    useconds_t tick = 0;
+    while(tick < timeout)
+    {
+        if (*interupt_signal == 1)
+            break;
+
+        tick += 10;
+        usleep(10);
+    }
+
+    return (*interupt_signal == 1);
+}
+
 void rgcp_socket_init(int fd, struct rgcp_socket **sock)
 {
     pthread_t thread_id;
@@ -131,7 +201,9 @@ void rgcp_socket_init(int fd, struct rgcp_socket **sock)
     (*sock) = calloc(sizeof(struct rgcp_socket), 1);
     (*sock)->sockfd = rgcp_get_next_socket_fd();
     (*sock)->middlewarefd = fd;
+    (*sock)->has_data = 0;
 
+    pthread_mutex_init(&(*sock)->socket_mtx, NULL);
     pthread_create(&thread_id, NULL, middleware_handler_thread, *sock);
     (*sock)->middleware_handler_thread_id = thread_id;
 
@@ -204,17 +276,63 @@ int rgcp_get_group_info(int sockfd, struct rgcp_group_info **groups, size_t *len
     if (rgcp_send_middleware_packet(sock, &packet) <= 0)
         return -1;
 
-    return -1;
+    // FIXME: wait for response interupt or timeout
+    if (wait_with_interupt(&sock->has_data, RGCP_MIDDLEWARE_TIMEOUT) == 1)
+    {
+        sock->has_data = 0;
+        // we received response
+        // TODO: parse it
+    }
+    else
+    {
+        // timeout reached return error
+        errno = ETIMEDOUT;
+        return -1;
+    }
+
+    return 0;
 }
 
 int rgcp_create_group(int sockfd, const char *groupname)
 {
+    struct rgcp_socket *sock = rgcp_find_by_fd(sockfd);
+
+    if (sock == NULL)
+    {
+        errno = ENOTSOCK;
+        return -1;
+    }
+
+    struct rgcp_packet packet;
+
+    // TODO: add extra info here when packet struct is complete
+    packet.type = RGCP_CREATE_GROUP;
+
+    if (rgcp_send_middleware_packet(sock, &packet) <= 0)
+        return -1;
+
     errno = ENOTSUP;
     return -1;
 }
 
 int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group)
 {
+    struct rgcp_socket *sock = rgcp_find_by_fd(sockfd);
+
+    if (sock == NULL)
+    {
+        errno = ENOTSOCK;
+        return -1;
+    }
+
+    struct rgcp_packet packet;
+
+    // TODO: add extra info here when packet struct is complete
+    packet.type = RGCP_JOIN_GROUP;
+
+    if (rgcp_send_middleware_packet(sock, &packet) <= 0)
+        return -1;
+
     errno = ENOTSUP;
     return -1;
 }
