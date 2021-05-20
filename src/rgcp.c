@@ -3,7 +3,9 @@
 #include "systems_headers.h"
 #include "linklist.h"
 
-#define RGCP_MIDDLEWARE_TIMEOUT 300000
+#define RGCP_MIDDLEWARE_TIMEOUT 3000000
+
+#define max(a,b) (a > b ? a : b)
 
 LIST_HEAD(rgcp_groupfd_list);
 
@@ -12,50 +14,108 @@ struct rgcp_socket
     struct list_head list;
     int sockfd;
     int middlewarefd;
-    int has_data;
+
+    int connected_to_group;
+    int received_response;
 
     pthread_mutex_t socket_mtx;
     pthread_t middleware_handler_thread_id;
 };
 
-int rgcp_send_middleware_packet(struct rgcp_socket *sock, struct rgcp_packet *packet)
+int rgcp_pack(enum rgcp_request_type type, union rgcp_packet_data *data, struct rgcp_packet **packet)
 {
-    ssize_t bytes_sent = send(sock->middlewarefd, (uint8_t *)packet, sizeof(*packet), 0);
+    *packet = calloc(sizeof(struct rgcp_packet), 1);
+
+    (*packet)->packet_len = sizeof(**packet);
+    (*packet)->type = type;
+
+    if (type == RGCP_GROUP_DISCOVER)
+    {
+        // nothing needs to be set
+    }
+    else if (type == RGCP_CREATE_GROUP)
+    {
+        (*packet)->packet_len +=
+            sizeof(data->group_info.name_length) + 
+            sizeof(data->group_info.peer_count) +
+            ( data->group_info.name_length * sizeof(char) ) +
+            ( data->group_info.peer_count * sizeof(struct rgcp_peer_info) );
+        
+        (*packet) = realloc((*packet), (*packet)->packet_len);
+
+        uint32_t offset = 0;
+        memcpy((*packet)->data, &data->group_info.name_length, sizeof(uint32_t));
+        offset += sizeof(uint32_t);
+        memcpy((*packet)->data + offset, data->group_info.group_name, data->group_info.name_length * sizeof(char));
+        offset += data->group_info.name_length;
+        memcpy((*packet)->data + offset, &data->group_info.peer_count, sizeof(uint32_t));
+        offset += sizeof(uint32_t);
+        memcpy((*packet)->data + offset, data->group_info.peers, data->group_info.peer_count * sizeof(struct rgcp_peer_info));
+    }
+
+    return 0;
+}
+
+int rgcp_send_middleware_packet(struct rgcp_socket *sock, enum rgcp_request_type type, union rgcp_packet_data *data)
+{
+    struct rgcp_packet *packet = NULL;
+
+    if (rgcp_pack(type, data, &packet) < 0)
+    {
+        fprintf(stderr, "[LIB] error serializing packet\n");
+        return -1;
+    }
+
+    ssize_t bytes_sent = send(sock->middlewarefd, (uint8_t *)packet, packet->packet_len, 0);
 
     if (bytes_sent < 0)
     {
         perror("Error sending to middleware");
+        free(packet);
         return -1;
     }
 
-    if (bytes_sent == 0)
-        return 0;
+    free(packet);
 
     return bytes_sent;
 }
 
-int rgcp_recv_middleware_packet(struct rgcp_socket *sock, struct rgcp_packet *packet)
+int rgcp_recv_middleware_packet(struct rgcp_socket *sock, struct rgcp_packet **packet)
 {
-    uint8_t buffer[sizeof(*packet)];
-    memset(buffer, 0, sizeof(buffer));
+    uint8_t size_buffer[sizeof(uint32_t)];
+    int res1 = recv(sock->middlewarefd, size_buffer, sizeof(size_buffer), 0);
 
-    ssize_t bytes_received = recv(sock->middlewarefd, buffer, sizeof(buffer), 0);
-
-    if (bytes_received < 0)
-    {
-        perror("Error receiving from middleware");
+    if (res1 <= 0)
         return -1;
-    }
 
-    if (bytes_received == 0)
-        return 0;
+    uint32_t packet_length = 0;
 
-    memcpy(packet, buffer, bytes_received);
+    for (size_t i = 0; i < sizeof(uint32_t); i++)
+        packet_length += (uint8_t)(size_buffer[i] >> (sizeof(uint8_t) - 1 - i));
 
-    return bytes_received;
+    printf("%d\n", packet_length);
+
+    if (packet_length == 0)
+        return -1;
+
+    uint8_t data_buffer[packet_length - sizeof(uint32_t)];
+    int res2 = recv(sock->middlewarefd, data_buffer, packet_length - sizeof(uint32_t), 0);
+
+    if (res2 < 0)
+        return -1;
+
+    uint8_t packet_buffer[packet_length];
+
+    memcpy(packet_buffer, size_buffer, sizeof(uint32_t));
+    memcpy(packet_buffer + sizeof(uint32_t), data_buffer, packet_length - sizeof(uint32_t));
+
+    *packet = calloc(packet_length, 1);
+    memcpy(*packet, packet_buffer, packet_length);
+
+    return res1 + res2;
 }
 
-void thread_registersignals(int *sfd)
+void thread_register_signals(int *sfd)
 {
     sigset_t mask;
 
@@ -73,28 +133,27 @@ void thread_registersignals(int *sfd)
 
 int execute_middleware_request(struct rgcp_socket *sock, struct rgcp_packet *packet)
 {
-    switch(packet->type)
-    {
-        case RGCP_GROUP_DISCOVER_RESPONSE:
-            break;
-        case RGCP_NEW_GROUP_MEMBER:
-            break;
-        case RGCP_DELETE_GROUP_MEMBER:
-            break;
-        default:
-            break;
-    }
+    pthread_mutex_lock(&sock->socket_mtx);
+
+    sock->received_response = 1;
+
+    // TODO: send data to other thread
+    // internal sockets?
+
+    pthread_mutex_unlock(&sock->socket_mtx);
 
     return 0;
 }
 
 int handle_middleware_requests(struct rgcp_socket *sock)
 {
-    struct rgcp_packet packet;
+    struct rgcp_packet *packet = NULL;
     if (rgcp_recv_middleware_packet(sock, &packet) < 0)
         return -1;
     
-    return execute_middleware_request(sock, &packet);
+    int retval = execute_middleware_request(sock, packet);
+    free(packet);
+    return retval;
 }
 
 void *middleware_handler_thread(void *arg)
@@ -104,7 +163,9 @@ void *middleware_handler_thread(void *arg)
     ssize_t s;
     struct signalfd_siginfo fdsi;
     int sfd = -1;
-    thread_registersignals(&sfd);
+    fd_set read_fds;
+
+    thread_register_signals(&sfd);
 
     if (sfd < 0)
     {
@@ -116,28 +177,44 @@ void *middleware_handler_thread(void *arg)
 
     for (;;)
     {
-        s = read(sfd, &fdsi, sizeof(fdsi));
-        if (s != sizeof(fdsi))
+        FD_ZERO(&read_fds);
+        FD_SET(sfd, &read_fds);
+        FD_SET(sock->middlewarefd, &read_fds);
+
+        if (select(max(sock->middlewarefd, sfd) + 1, &read_fds, NULL, NULL, NULL) < 0)
         {
-            perror("Reading signal info failed");
+            perror("Select failed");
             abort();
         }
 
-        if (fdsi.ssi_signo == SIGALRM)
+        if (FD_ISSET(sfd, &read_fds))
         {
-            break;
-        }
-        else 
-        {
-            printf("Read unexpected signal 0x%x\n", fdsi.ssi_signo);
-            abort();
+            s = read(sfd, &fdsi, sizeof(fdsi));
+            if (s != sizeof(fdsi))
+            {
+                perror("Reading signal info failed");
+                abort();
+            }
+
+            if (fdsi.ssi_signo == SIGALRM)
+            {
+                break;
+            }
+            else 
+            {
+                printf("Read unexpected signal 0x%x\n", fdsi.ssi_signo);
+                abort();
+            }
         }
 
-        // handle incoming middleware requests here
-        if (handle_middleware_requests(sock) < 0)
+        if (FD_ISSET(sock->middlewarefd, &read_fds))
         {
-            //TODO: set socket in error state
-        }
+            // handle incoming middleware requests here
+            if (handle_middleware_requests(sock) < 0)
+            {
+                //TODO: set socket in error state
+            }
+        }        
     }
 
     printf("[LIB] mw thread stopped\n");
@@ -201,7 +278,8 @@ void rgcp_socket_init(int fd, struct rgcp_socket **sock)
     (*sock) = calloc(sizeof(struct rgcp_socket), 1);
     (*sock)->sockfd = rgcp_get_next_socket_fd();
     (*sock)->middlewarefd = fd;
-    (*sock)->has_data = 0;
+    (*sock)->connected_to_group = 0;
+    (*sock)->received_response = 0;
 
     pthread_mutex_init(&(*sock)->socket_mtx, NULL);
     pthread_create(&thread_id, NULL, middleware_handler_thread, *sock);
@@ -258,7 +336,7 @@ error:
     return -1;
 }
 
-int rgcp_get_group_info(int sockfd, struct rgcp_group_info **groups, size_t *len)
+int rgcp_get_group_info(int sockfd, __attribute__((unused)) struct rgcp_group_info **groups, __attribute__((unused)) size_t *len)
 {
     struct rgcp_socket *sock = rgcp_find_by_fd(sockfd);
 
@@ -268,20 +346,18 @@ int rgcp_get_group_info(int sockfd, struct rgcp_group_info **groups, size_t *len
         return -1;
     }
 
-    struct rgcp_packet packet;
-
-    // TODO: add extra info here when packet struct is complete
-    packet.type = RGCP_GROUP_DISCOVER;
-
-    if (rgcp_send_middleware_packet(sock, &packet) <= 0)
+    if (rgcp_send_middleware_packet(sock, RGCP_GROUP_DISCOVER, NULL) <= 0)
         return -1;
 
     // FIXME: wait for response interupt or timeout
-    if (wait_with_interupt(&sock->has_data, RGCP_MIDDLEWARE_TIMEOUT) == 1)
+    if (wait_with_interupt(&sock->received_response, RGCP_MIDDLEWARE_TIMEOUT) == 1)
     {
-        sock->has_data = 0;
+        pthread_mutex_lock(&sock->socket_mtx);
+        sock->received_response = 0;
         // we received response
         // TODO: parse it
+
+        pthread_mutex_unlock(&sock->socket_mtx);
     }
     else
     {
@@ -293,7 +369,7 @@ int rgcp_get_group_info(int sockfd, struct rgcp_group_info **groups, size_t *len
     return 0;
 }
 
-int rgcp_create_group(int sockfd, const char *groupname)
+int rgcp_create_group(int sockfd, __attribute__((unused)) const char *groupname)
 {
     struct rgcp_socket *sock = rgcp_find_by_fd(sockfd);
 
@@ -303,19 +379,26 @@ int rgcp_create_group(int sockfd, const char *groupname)
         return -1;
     }
 
-    struct rgcp_packet packet;
+    union rgcp_packet_data data;
+    memset(&data, 0, sizeof(data));
+    
+    data.group_info.name_length = strlen(groupname) + 1; // +1 accounts for NULL byte
+    data.group_info.group_name = calloc(data.group_info.name_length, sizeof(char));
+    memcpy(data.group_info.group_name, groupname, data.group_info.name_length);
+    data.group_info.peer_count = 0;
+    data.group_info.peers = NULL;
 
-    // TODO: add extra info here when packet struct is complete
-    packet.type = RGCP_CREATE_GROUP;
-
-    if (rgcp_send_middleware_packet(sock, &packet) <= 0)
+    if (rgcp_send_middleware_packet(sock, RGCP_CREATE_GROUP, &data) <= 0)
         return -1;
+
+    // peer info is not alloc'd, so no free
+    free(data.group_info.group_name);
 
     errno = ENOTSUP;
     return -1;
 }
 
-int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group)
+int rgcp_connect(int sockfd, __attribute__((unused)) struct rgcp_group_info rgcp_group)
 {
     struct rgcp_socket *sock = rgcp_find_by_fd(sockfd);
 
@@ -325,12 +408,11 @@ int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group)
         return -1;
     }
 
-    struct rgcp_packet packet;
+    union rgcp_packet_data data;
+    memset(&data, 0, sizeof(data));
+    // TODO: fill out data
 
-    // TODO: add extra info here when packet struct is complete
-    packet.type = RGCP_JOIN_GROUP;
-
-    if (rgcp_send_middleware_packet(sock, &packet) <= 0)
+    if (rgcp_send_middleware_packet(sock, RGCP_JOIN_GROUP, &data) <= 0)
         return -1;
 
     errno = ENOTSUP;
@@ -352,13 +434,13 @@ int rgcp_close(int sockfd)
     return 0;
 }
 
-ssize_t rgcp_send(int sockfd, const void *buf, size_t len, int flags)
+ssize_t rgcp_send(__attribute__((unused)) int sockfd, __attribute__((unused)) const void *buf, __attribute__((unused)) size_t len, __attribute__((unused)) int flags)
 {
     errno = ENOTSUP;
     return -1;
 }
 
-ssize_t rgcp_recv(int sockfd, void *buf, size_t len, int flags)
+ssize_t rgcp_recv(__attribute__((unused)) int sockfd, __attribute__((unused)) void *buf, __attribute__((unused)) size_t len, __attribute__((unused)) int flags)
 {
     errno = ENOTSUP;
     return -1;
