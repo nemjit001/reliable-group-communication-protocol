@@ -1,6 +1,7 @@
 #ifndef RGCP_H
 #define RGCP_H
 
+#include <stdlib.h>
 #include <stdint.h>
 #include <netinet/ip.h>
 #include <sys/socket.h>
@@ -10,9 +11,13 @@ enum rgcp_request_type
     RGCP_GROUP_DISCOVER,
     RGCP_GROUP_DISCOVER_RESPONSE,
     RGCP_CREATE_GROUP,
+    RGCP_CREATE_GROUP_OK,
+    RGCP_CREATE_GROUP_ERROR_NAME,
+    RGCP_CREATE_GROUP_ERROR_GROUPS,
     RGCP_JOIN_GROUP,
     RGCP_JOIN_RESPONSE,
     RGCP_LEAVE_GROUP,
+    RGCP_LEAVE_GROUP_OK,
     RGCP_NEW_GROUP_MEMBER,
     RGCP_DELETE_GROUP_MEMBER
 };
@@ -51,6 +56,14 @@ struct rgcp_packet
     uint8_t data[];
 } __attribute__((packed));
 
+void rgcp_group_info_init(struct rgcp_group_info *group_info);
+
+void rgcp_group_info_free(struct rgcp_group_info *group_info);
+
+void rgcp_group_list_init(struct rgcp_group_list *group_list);
+
+void rgcp_group_list_free(struct rgcp_group_list *group_list);
+
 /**
  * @brief Create an RGCP socket connected to rgcp middleware
  */
@@ -59,7 +72,7 @@ int rgcp_socket(int domain, struct sockaddr_in *middleware_addr);
 /**
  * @brief Get RGCP group info from middleware
  */
-int rgcp_get_group_info(int sockfd, struct rgcp_group_info **groups, size_t *len);
+int rgcp_get_group_info(int sockfd, struct rgcp_group_list *group_list);
 
 /**
  * @brief Ceate RGCP group
