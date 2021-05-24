@@ -3,7 +3,7 @@
 #include "systems_headers.h"
 #include "linklist.h"
 
-#define RGCP_MIDDLEWARE_TIMEOUT 3000000
+#define RGCP_MIDDLEWARE_TIMEOUT 300000
 
 #define max(a,b) (a > b ? a : b)
 
@@ -256,8 +256,7 @@ void *middleware_handler_thread(void *arg)
         FD_ZERO(&read_fds);
         FD_SET(sfd, &read_fds);
 
-        if (sock->middlewarefd >= 0)
-            FD_SET(sock->middlewarefd, &read_fds);
+        FD_SET(sock->middlewarefd, &read_fds);
 
         if (select(max(sock->middlewarefd, sfd) + 1, &read_fds, NULL, NULL, NULL) < 0)
         {
@@ -285,7 +284,7 @@ void *middleware_handler_thread(void *arg)
             }
         }
 
-        if (sock->middlewarefd >= 0 && FD_ISSET(sock->middlewarefd, &read_fds))
+        if (FD_ISSET(sock->middlewarefd, &read_fds))
         {
             // handle incoming middleware requests here
             if (handle_middleware_requests(sock) < 0)
@@ -467,18 +466,18 @@ int rgcp_socket(int domain, struct sockaddr_in *middleware_addr)
         return -1;
     }
 
-    struct rgcp_socket *sock;
+    struct rgcp_socket *sock = NULL;
     int fd = socket(domain, SOCK_STREAM, IPPROTO_TCP);
 
     if (fd < 0)
         goto error;
 
-    if (rgcp_socket_init(fd, &sock) < 0)
-        goto error;
-
     // TODO: add host resolve here -> check if address is indeed valid + check if it resolves to valid ipv4/ipv6 host
 
-    if (connect(sock->middlewarefd, (struct sockaddr *) middleware_addr, sizeof(*middleware_addr)) < 0)
+    if (connect(fd, (struct sockaddr *) middleware_addr, sizeof(*middleware_addr)) < 0)
+        goto error;
+
+    if (rgcp_socket_init(fd, &sock) < 0)
         goto error;
 
     return sock->sockfd;
@@ -559,19 +558,20 @@ int rgcp_create_group(int sockfd, const char *groupname)
         return -1;
     }
 
-    union rgcp_packet_data data;
-    memset(&data, 0, sizeof(data));
+    union rgcp_packet_data send_data;
+    memset(&send_data, 0, sizeof(send_data));
     
-    data.group_info.name_length = strlen(groupname) + 1; // +1 accounts for NULL byte
-    data.group_info.group_name = calloc(data.group_info.name_length, sizeof(char));
-    memcpy(data.group_info.group_name, groupname, data.group_info.name_length);
-    data.group_info.peer_count = 0;
-    data.group_info.peers = calloc(data.group_info.peer_count, sizeof(struct rgcp_peer_info));;
+    send_data.group_info.name_length = strlen(groupname) + 1; // +1 accounts for NULL byte
+    send_data.group_info.group_name = calloc(send_data.group_info.name_length, sizeof(char));
+    memcpy(send_data.group_info.group_name, groupname, send_data.group_info.name_length);
+    
+    send_data.group_info.peer_count = 0;
+    send_data.group_info.peers = calloc(send_data.group_info.peer_count, sizeof(struct rgcp_peer_info));
 
-    if (rgcp_send_middleware_packet(sock, RGCP_CREATE_GROUP, &data) <= 0)
+    if (rgcp_send_middleware_packet(sock, RGCP_CREATE_GROUP, &send_data) <= 0)
         return -1;
 
-    rgcp_group_info_free(&data.group_info);
+    rgcp_group_info_free(&send_data.group_info);
 
     if (wait_with_interupt(&sock->received_response, RGCP_MIDDLEWARE_TIMEOUT) == 1)
     {
@@ -581,22 +581,20 @@ int rgcp_create_group(int sockfd, const char *groupname)
         sock->received_response = 0;
 
         struct rgcp_packet *packet = NULL;
-        union rgcp_packet_data data;
-        memset(&data, 0, sizeof(data));
 
         if (read_from_thread_comms_channel(sock->thread_comms_channel[0], &packet) < 0)
             goto error;
 
-        if (packet->type != RGCP_CREATE_GROUP_OK && packet->type != RGCP_CREATE_GROUP_ERROR_NAME && packet->type != RGCP_CREATE_GROUP_ERROR_GROUPS)
+        if (packet->type != RGCP_CREATE_GROUP_OK && packet->type != RGCP_CREATE_GROUP_ERROR_NAME && packet->type != RGCP_CREATE_GROUP_ERROR_MAX_GROUPS)
             goto error;
 
         if (packet->type == RGCP_CREATE_GROUP_ERROR_NAME)
         {
-            errno = EOVERFLOW;
+            // FIXME: how to set errno here?
             goto error;
         }
 
-        if (packet->type == RGCP_CREATE_GROUP_ERROR_GROUPS)
+        if (packet->type == RGCP_CREATE_GROUP_ERROR_MAX_GROUPS)
         {
             // FIXME: how to set errno here?
             goto error;
@@ -618,13 +616,10 @@ int rgcp_create_group(int sockfd, const char *groupname)
         return -1;
     }
 
-    // peer info is not alloc'd, so no free
-    free(data.group_info.group_name);
-
     return 0;
 }
 
-int rgcp_connect(int sockfd, __attribute__((unused)) struct rgcp_group_info rgcp_group)
+int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group)
 {
     struct rgcp_socket *sock = rgcp_find_by_fd(sockfd);
 
@@ -634,14 +629,89 @@ int rgcp_connect(int sockfd, __attribute__((unused)) struct rgcp_group_info rgcp
         return -1;
     }
 
-    union rgcp_packet_data data;
-    memset(&data, 0, sizeof(data));
-    // TODO: fill out data
+    if (sock->connected_to_group == 1)
+    {
+        // FIXME: disconnect first
+    }
 
-    if (rgcp_send_middleware_packet(sock, RGCP_JOIN_GROUP, &data) <= 0)
+    union rgcp_packet_data send_data;
+    memset(&send_data, 0, sizeof(send_data));
+    
+    send_data.group_info.name_length = rgcp_group.name_length;
+    send_data.group_info.group_name = calloc(rgcp_group.name_length, sizeof(char));
+    memcpy(send_data.group_info.group_name, rgcp_group.group_name, rgcp_group.name_length);
+
+    // peers do not matter, because we get new info anyways
+    send_data.group_info.peer_count = 0;
+    send_data.group_info.peers = calloc(send_data.group_info.peer_count, sizeof(struct rgcp_peer_info));
+
+    if (rgcp_send_middleware_packet(sock, RGCP_JOIN_GROUP, &send_data) <= 0)
         return -1;
 
-    errno = ENOTSUP;
+    rgcp_group_info_free(&send_data.group_info);
+
+    if (wait_with_interupt(&sock->received_response, RGCP_MIDDLEWARE_TIMEOUT) == 1)
+    {
+        pthread_mutex_lock(&sock->socket_mtx);
+
+        // flip receive signal back to 0
+        sock->received_response = 0;
+
+        struct rgcp_packet *packet = NULL;
+        union rgcp_packet_data recv_data;
+        memset(&recv_data, 0, sizeof(recv_data));
+
+        if (read_from_thread_comms_channel(sock->thread_comms_channel[0], &packet) < 0)
+            goto error;
+
+        if (
+            packet->type != RGCP_JOIN_RESPONSE &&
+            packet->type != RGCP_JOIN_ERROR_NO_SUCH_GROUP &&
+            packet->type != RGCP_JOIN_ERROR_NAME &&
+            packet->type != RGCP_JOIN_ERROR_MAX_CLIENTS
+        )
+        {
+            goto error;
+        }
+
+        if (packet->type == RGCP_JOIN_ERROR_NAME)
+        {
+            // FIXME: how to set errno here?
+            goto error;
+        }
+
+        if (packet->type == RGCP_JOIN_ERROR_NO_SUCH_GROUP)
+        {
+            // FIXME: how to set errno here?
+            goto error;
+        }
+
+        if (packet->type == RGCP_JOIN_ERROR_MAX_CLIENTS)
+        {
+            // FIXME: how to set errno here?
+            goto error;
+        }
+
+        // packet must be of type response
+        // TODO: unpack and set socket in connected state
+
+        printf("[LIB] recvd group response?\n");
+
+        free(packet);
+        pthread_mutex_unlock(&sock->socket_mtx);
+
+        return 0;
+    error:
+        free(packet);
+        pthread_mutex_unlock(&sock->socket_mtx);
+        return -1;
+    }
+    else
+    {
+        errno = ETIMEDOUT;
+        return -1;
+    }
+
     return -1;
 }
 
