@@ -205,7 +205,7 @@ void thread_register_signals(int *sfd)
     *sfd = signalfd(-1, &mask, 0);
 }
 
-int forward_middleware_request(struct rgcp_socket *sock, __attribute__((unused)) struct rgcp_packet *packet)
+int forward_middleware_request(struct rgcp_socket *sock, struct rgcp_packet *packet)
 {
     pthread_mutex_lock(&sock->socket_mtx);
 
@@ -215,10 +215,42 @@ int forward_middleware_request(struct rgcp_socket *sock, __attribute__((unused))
 
     pthread_mutex_unlock(&sock->socket_mtx);
 
-    if (res < 0)
-        return -1;
+    return res < 0 ? -1 : 0;
+}
 
+int remove_group_member()
+{
+    printf("in remove function\n");
     return 0;
+}
+
+int add_group_member()
+{
+    printf("in add function\n");
+    return 0;
+}
+
+int handle_passive_request(struct rgcp_socket *sock, struct rgcp_packet *packet)
+{
+    pthread_mutex_lock(&sock->socket_mtx);
+
+    int res = 0;
+
+    switch (packet->type)
+    {
+    case RGCP_NEW_GROUP_MEMBER:
+        res = add_group_member();
+        break;
+    case RGCP_DELETE_GROUP_MEMBER:
+        res = remove_group_member();
+        break;
+    default:
+        break;
+    }
+
+    pthread_mutex_unlock(&sock->socket_mtx);
+
+    return res < 0 ? -1 : 0;
 }
 
 int handle_middleware_requests(struct rgcp_socket *sock)
@@ -227,7 +259,40 @@ int handle_middleware_requests(struct rgcp_socket *sock)
     if (rgcp_recv_middleware_packet(sock, &packet) < 0)
         return -1;
     
-    int retval = forward_middleware_request(sock, packet);
+    int retval = 0;
+
+    switch(packet->type)
+    {
+        case RGCP_GROUP_DISCOVER_RESPONSE:
+        case RGCP_CREATE_GROUP_OK:
+        case RGCP_CREATE_GROUP_ERROR_NAME:
+        case RGCP_CREATE_GROUP_ERROR_MAX_GROUPS:
+        case RGCP_JOIN_RESPONSE:
+        case RGCP_JOIN_ERROR_NO_SUCH_GROUP:
+        case RGCP_JOIN_ERROR_NAME:
+        case RGCP_JOIN_ERROR_MAX_CLIENTS:
+        case RGCP_JOIN_ERROR_ALREADY_IN_GROUP:
+            // received active response -> forward to main thread
+            retval = forward_middleware_request(sock, packet);
+            break;
+        case RGCP_NEW_GROUP_MEMBER:
+        case RGCP_DELETE_GROUP_MEMBER:
+            // received passive packet -> handle in this thread
+            retval = handle_passive_request(sock, packet);
+            break;
+        case RGCP_LEAVE_GROUP:
+        case RGCP_JOIN_GROUP:
+        case RGCP_CREATE_GROUP:
+        case RGCP_GROUP_DISCOVER:
+            // received impossible packet type
+            retval = -1;
+            break;
+        default:
+            // received unknown packet :(
+            retval = -1;
+            break;
+    }
+
     free(packet);
     return retval;
 }
@@ -629,6 +694,8 @@ int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group)
         return -1;
     }
 
+    printf("groupname: %s\n", rgcp_group.group_name);
+
     if (sock->connected_to_group == 1)
     {
         // FIXME: disconnect first
@@ -668,7 +735,8 @@ int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group)
             packet->type != RGCP_JOIN_RESPONSE &&
             packet->type != RGCP_JOIN_ERROR_NO_SUCH_GROUP &&
             packet->type != RGCP_JOIN_ERROR_NAME &&
-            packet->type != RGCP_JOIN_ERROR_MAX_CLIENTS
+            packet->type != RGCP_JOIN_ERROR_MAX_CLIENTS && 
+            packet->type != RGCP_JOIN_ERROR_ALREADY_IN_GROUP
         )
         {
             goto error;
@@ -692,10 +760,14 @@ int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group)
             goto error;
         }
 
+        if (packet->type == RGCP_JOIN_ERROR_ALREADY_IN_GROUP)
+        {
+            // FIXME: how to set errno here?
+            goto error;
+        }
+
         // packet must be of type response
         // TODO: unpack and set socket in connected state
-
-        printf("[LIB] recvd group response?\n");
 
         free(packet);
         pthread_mutex_unlock(&sock->socket_mtx);
@@ -712,7 +784,7 @@ int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group)
         return -1;
     }
 
-    return -1;
+    return 0;
 }
 
 int rgcp_close(int sockfd)
