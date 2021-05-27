@@ -15,6 +15,7 @@ enum rgcp_request_type
     RGCP_CREATE_GROUP_OK,
     RGCP_CREATE_GROUP_ERROR_NAME,
     RGCP_CREATE_GROUP_ERROR_MAX_GROUPS,
+    RGCP_CREATE_GROUP_ERROR_ALREADY_EXISTS,
     RGCP_JOIN_GROUP,
     RGCP_JOIN_RESPONSE,
     RGCP_JOIN_ERROR_NO_SUCH_GROUP,
@@ -60,13 +61,21 @@ struct rgcp_packet
     uint8_t data[];
 } __attribute__((packed));
 
+struct rgcp_recv_data
+{
+    char **buffers;
+    size_t buffer_count;
+    size_t buffer_length;
+};
+
+// struct initialization functions
 void rgcp_group_info_init(struct rgcp_group_info *group_info);
-
 void rgcp_group_info_free(struct rgcp_group_info *group_info);
-
 void rgcp_group_list_init(struct rgcp_group_list *group_list);
-
 void rgcp_group_list_free(struct rgcp_group_list *group_list);
+
+void rgcp_recv_data_init(struct rgcp_recv_data *recv_data);
+void rgcp_recv_data_free(struct rgcp_recv_data *recv_data);
 
 /**
  * @brief Create an RGCP socket connected to rgcp middleware
@@ -106,6 +115,6 @@ ssize_t rgcp_send(int sockfd, const void *buf, size_t len, int flags);
 /**
  * @brief Receive data from the remote address
  */
-ssize_t rgcp_recv(int sockfd, void *buf, size_t len, int flags);
+ssize_t rgcp_recv(int sockfd, struct rgcp_recv_data *recv_data, size_t bytes_to_read, int flags);
 
 #endif // RGCP_H

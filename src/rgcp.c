@@ -19,7 +19,7 @@ struct rgcp_peer
 
 struct rgcp_group_connection_info
 {
-    const char *groupname;
+    char *groupname;
     struct list_head peer_list;
 };
 
@@ -86,6 +86,23 @@ int unpack_group_info_packet(struct rgcp_group_info *info, struct rgcp_packet *p
     return offset;
 }
 
+int unpack_peer_info_packet(struct rgcp_peer_info *info, struct rgcp_packet *packet, uint32_t offset_start)
+{
+    uint32_t data_length = packet->packet_len - sizeof(struct rgcp_packet);
+    uint32_t offset = offset_start;
+
+    if (data_length == 0 || data_length < sizeof(struct rgcp_peer_info))
+        return -1;
+
+    memcpy(&info->addr, packet->data + offset, sizeof(struct sockaddr_in));
+    offset += sizeof(struct sockaddr_in);
+
+    memcpy(&info->addrlen, packet->data + offset, sizeof(socklen_t));
+    offset += sizeof(socklen_t);
+
+    return offset;
+}
+
 int rgcp_unpack(union rgcp_packet_data *data, struct rgcp_packet *packet)
 {
     if (packet->type == RGCP_GROUP_DISCOVER_RESPONSE)
@@ -104,6 +121,10 @@ int rgcp_unpack(union rgcp_packet_data *data, struct rgcp_packet *packet)
     else if (packet->type == RGCP_JOIN_RESPONSE)
     {
         return unpack_group_info_packet(&data->group_info, packet, 0) > 0 ? 0 : -1;
+    }
+    else if (packet->type == RGCP_NEW_GROUP_MEMBER || packet->type == RGCP_DELETE_GROUP_MEMBER)
+    {
+        return unpack_peer_info_packet(&data->peer, packet, 0) > 0 ? 0 : -1;
     }
     else
     {
@@ -125,6 +146,18 @@ int pack_group_info_packet(struct rgcp_group_info *info, uint8_t *array)
     offset += sizeof(uint32_t);
     memcpy(array + offset, info->peers, info->peer_count * sizeof(struct rgcp_peer_info));
     offset += info->peer_count * sizeof(struct rgcp_peer_info);
+    return offset;
+}
+
+int pack_peer_info_packet(struct rgcp_peer_info *info, uint8_t *array)
+{
+    uint32_t offset = 0;
+    memcpy(array + offset, &info->addr, sizeof(struct sockaddr_in));
+    offset += sizeof(struct sockaddr_in);
+
+    memcpy(array + offset, &info->addrlen, sizeof(socklen_t));
+    offset += sizeof(socklen_t);
+
     return offset;
 }
 
@@ -150,6 +183,14 @@ int rgcp_pack(enum rgcp_request_type type, union rgcp_packet_data *data, struct 
         (*packet) = realloc((*packet), (*packet)->packet_len);
 
         return pack_group_info_packet(&data->group_info, (*packet)->data) >= 0 ? 0 : -1;
+    }
+    else if (type == RGCP_ADDRINFO_SHARE)
+    {
+        (*packet)->packet_len += sizeof(struct rgcp_peer_info);
+        
+        (*packet) = realloc((*packet), (*packet)->packet_len);
+
+        return pack_peer_info_packet(&data->peer, (*packet)->data) >= 0 ? 0 : -1;
     }
     else
     {
@@ -235,43 +276,82 @@ void thread_register_signals(int *sfd)
 
 int forward_middleware_request(struct rgcp_socket *sock, struct rgcp_packet *packet)
 {
-    pthread_mutex_lock(&sock->socket_mtx);
-
     sock->received_response = 1;
-
     int res = write(sock->thread_comms_channel[1], (uint8_t *)packet, packet->packet_len);
-
-    pthread_mutex_unlock(&sock->socket_mtx);
-
     return res < 0 ? -1 : 0;
 }
 
-int add_group_member(__attribute__((unused)) struct rgcp_socket *sock, struct rgcp_packet *packet)
+int add_group_member(struct rgcp_socket *sock, struct rgcp_packet *packet)
 {
     union rgcp_packet_data data;
     memset(&data, 0, sizeof(data));
 
     if (rgcp_unpack(&data, packet) < 0)
         return -1;
+
+    printf("\tadding : %d %d %d\n", data.peer.addr.sin_addr.s_addr, data.peer.addr.sin_family, data.peer.addr.sin_port);
+
+    if (sock->listen_socket_info.listenfd < 0)
+        return -1;
+
+    struct sockaddr_in peer_addr;
+    socklen_t addrlen = sizeof(peer_addr);
+    int remote_fd = accept(sock->listen_socket_info.listenfd, (struct sockaddr *) & peer_addr, &addrlen);
+
+    if (peer_addr.sin_addr.s_addr != data.peer.addr.sin_addr.s_addr)
+    {
+        printf("AAAA WORNG CLIUENT\n");
+        // FIXME: wrong client?
+    }
+
+    struct rgcp_peer *peer = calloc(sizeof(struct rgcp_peer), 1);
+
+    peer->addr = data.peer.addr;
+    peer->addrlen = data.peer.addrlen;
+    peer->peer_fd = remote_fd;
+
+    list_add(&peer->list, &sock->group_connection_info.peer_list);
 
     return 0;
 }
 
-int remove_group_member(__attribute__((unused)) struct rgcp_socket *sock, struct rgcp_packet *packet)
+int remove_group_member(struct rgcp_socket *sock, struct rgcp_packet *packet)
 {
     union rgcp_packet_data data;
     memset(&data, 0, sizeof(data));
 
     if (rgcp_unpack(&data, packet) < 0)
         return -1;
+
+    printf("\tremoving : %d %d %d\n", data.peer.addr.sin_addr.s_addr, data.peer.addr.sin_family, data.peer.addr.sin_port);
+
+    struct list_head *current, *next;
+    list_for_each_safe(current, next, &sock->group_connection_info.peer_list)
+    {
+        struct rgcp_peer *entry = list_entry(current, struct rgcp_peer, list);
+
+        if (
+            entry->addr.sin_addr.s_addr == data.peer.addr.sin_addr.s_addr &&
+            entry->addr.sin_port == data.peer.addr.sin_port &&
+            entry->addr.sin_family == data.peer.addr.sin_family
+        )
+        {
+            break;
+        }
+    }
+
+    struct rgcp_peer *peer = list_entry(current, struct rgcp_peer, list);
+
+    close(peer->peer_fd);
+    list_del(&peer->list);
+
+    free(peer);
 
     return 0;
 }
 
 int handle_passive_request(struct rgcp_socket *sock, struct rgcp_packet *packet)
 {
-    pthread_mutex_lock(&sock->socket_mtx);
-
     int res = 0;
 
     switch (packet->type)
@@ -286,13 +366,13 @@ int handle_passive_request(struct rgcp_socket *sock, struct rgcp_packet *packet)
         break;
     }
 
-    pthread_mutex_unlock(&sock->socket_mtx);
-
     return res < 0 ? -1 : 0;
 }
 
 int handle_middleware_requests(struct rgcp_socket *sock)
 {
+    pthread_mutex_lock(&sock->socket_mtx);
+
     struct rgcp_packet *packet = NULL;
     if (rgcp_recv_middleware_packet(sock, &packet) < 0)
         return -1;
@@ -305,6 +385,7 @@ int handle_middleware_requests(struct rgcp_socket *sock)
         case RGCP_CREATE_GROUP_OK:
         case RGCP_CREATE_GROUP_ERROR_NAME:
         case RGCP_CREATE_GROUP_ERROR_MAX_GROUPS:
+        case RGCP_CREATE_GROUP_ERROR_ALREADY_EXISTS:
         case RGCP_JOIN_RESPONSE:
         case RGCP_JOIN_ERROR_NO_SUCH_GROUP:
         case RGCP_JOIN_ERROR_NAME:
@@ -330,6 +411,9 @@ int handle_middleware_requests(struct rgcp_socket *sock)
             retval = -1;
             break;
     }
+
+
+    pthread_mutex_unlock(&sock->socket_mtx);
 
     free(packet);
     return retval;
@@ -514,7 +598,7 @@ void rgcp_socket_close_all_connections(struct rgcp_socket *sock)
 
 int create_listen_socket(int *fd, struct sockaddr_in *addr, socklen_t *addrlen)
 {
-    *fd = socket(addr->sin_family, SOCK_STREAM, 0);
+    *fd = socket(addr->sin_family, SOCK_STREAM, IPPROTO_TCP);
 
     if (*fd < 0)
         return -1;
@@ -600,6 +684,7 @@ void rgcp_socket_free(struct rgcp_socket *sock)
     pthread_join(sock->middleware_handler_thread_id, NULL);
 
     rgcp_socket_close_all_connections(sock);
+    free(sock->group_connection_info.groupname);
 
     list_del(&sock->list);
     free(sock);
@@ -656,6 +741,16 @@ int rgcp_socket(int domain, struct sockaddr_in *middleware_addr)
         goto error;
 
     if (rgcp_socket_init(fd, &sock, domain) < 0)
+        goto error;
+
+    // send our addr info to middleware
+    union rgcp_packet_data data;
+    memset(&data, 0, sizeof(data));
+
+    data.peer.addr = sock->listen_socket_info.addr;
+    data.peer.addrlen = sock->listen_socket_info.addrlen;
+
+    if (rgcp_send_middleware_packet(sock, RGCP_ADDRINFO_SHARE, &data) < 0)
         goto error;
 
     return sock->sockfd;
@@ -764,7 +859,7 @@ int rgcp_create_group(int sockfd, const char *groupname)
         if (read_from_thread_comms_channel(sock->thread_comms_channel[0], &packet) < 0)
             goto error;
 
-        if (packet->type != RGCP_CREATE_GROUP_OK && packet->type != RGCP_CREATE_GROUP_ERROR_NAME && packet->type != RGCP_CREATE_GROUP_ERROR_MAX_GROUPS)
+        if (packet->type != RGCP_CREATE_GROUP_OK && packet->type != RGCP_CREATE_GROUP_ERROR_NAME && packet->type != RGCP_CREATE_GROUP_ERROR_MAX_GROUPS && packet->type != RGCP_CREATE_GROUP_ERROR_ALREADY_EXISTS)
             goto error;
 
         if (packet->type == RGCP_CREATE_GROUP_ERROR_NAME)
@@ -777,6 +872,13 @@ int rgcp_create_group(int sockfd, const char *groupname)
         {
             // FIXME: how to set errno here?
             goto error;
+        }
+
+        if (packet->type == RGCP_CREATE_GROUP_ERROR_ALREADY_EXISTS)
+        {    
+            free(packet);
+            pthread_mutex_unlock(&sock->socket_mtx);
+            return 1;
         }
 
         free(packet);
@@ -894,11 +996,30 @@ int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group)
         sock->connected_to_group = 1;
 
         // TODO: connect() to all other peers
-        printf("%s:\n", recv_data.group_info.group_name);
         for (uint32_t i = 0; i < recv_data.group_info.peer_count; i++)
         {
-            printf("\t%d %d %d\n", recv_data.group_info.peers[i].addr.sin_addr.s_addr, recv_data.group_info.peers[i].addr.sin_port, recv_data.group_info.peers[i].addr.sin_family);
+            struct rgcp_peer_info *remote_peer = &recv_data.group_info.peers[i];
+            struct rgcp_peer *peer = calloc(sizeof(struct rgcp_peer), 1);
+
+            peer->peer_fd = socket(remote_peer->addr.sin_family, SOCK_STREAM, IPPROTO_TCP);
+
+            if (peer->peer_fd < 0)
+                goto error;
+
+            struct sockaddr_in addr = remote_peer->addr;
+            
+            if (connect(peer->peer_fd, (struct sockaddr *) & addr, sizeof(addr)) < 0)
+                goto error;
+            
+            peer->addr = addr;
+            peer->addrlen = sizeof(addr);
+
+            list_add_tail(&peer->list, &sock->group_connection_info.peer_list);
         }
+
+        // save groupname for when client wants to disconnect
+        sock->group_connection_info.groupname = calloc(recv_data.group_info.name_length, sizeof(char));
+        memcpy(sock->group_connection_info.groupname, recv_data.group_info.group_name, recv_data.group_info.name_length);
 
         free(packet);
         rgcp_group_info_free(&recv_data.group_info);
@@ -952,7 +1073,7 @@ int rgcp_close(int sockfd)
     return 0;
 }
 
-ssize_t rgcp_send(int sockfd, __attribute__((unused)) const void *buf, __attribute__((unused)) size_t len, __attribute__((unused)) int flags)
+ssize_t rgcp_send(int sockfd, const void *buf, size_t len, int flags)
 {
     struct rgcp_socket *sock = rgcp_find_by_fd(sockfd);
 
@@ -962,14 +1083,66 @@ ssize_t rgcp_send(int sockfd, __attribute__((unused)) const void *buf, __attribu
         return -1;
     }
 
+    if (buf == NULL)
+        return -1;
+
     if (sock->connected_to_group == 0)
         return -1;
 
-    errno = ENOTSUP;
-    return -1;
+    ssize_t bytes_sent = 0;
+    struct list_head *current, *next;
+    list_for_each_safe(current, next, &sock->group_connection_info.peer_list)
+    {
+        struct rgcp_peer *entry = list_entry(current, struct rgcp_peer, list);
+
+        printf("sending to (%d)\n", entry->peer_fd);
+
+        ssize_t res = send(entry->peer_fd, buf, len, flags);
+
+        if (res < 0)
+        {
+            // FIXME: client has error
+            printf("ERROR\n");
+            return -1;
+        }
+
+        if (res == 0)
+        {
+            // FIXME: remote is closed
+            printf("NO DATA\n");
+            continue;
+        }
+        
+        bytes_sent += res;
+    }
+
+    return bytes_sent;
 }
 
-ssize_t rgcp_recv(int sockfd, __attribute__((unused)) void *buf, __attribute__((unused)) size_t len, __attribute__((unused)) int flags)
+void rgcp_recv_data_init(struct rgcp_recv_data *recv_data)
+{
+    if (recv_data == NULL)  
+        return;
+
+    recv_data->buffer_count = 0;
+    recv_data->buffer_length = 0;
+    recv_data->buffers = NULL;
+}
+
+void rgcp_recv_data_free(struct rgcp_recv_data *recv_data)
+{
+    if (recv_data == NULL)
+        return;
+
+    for (size_t i = 0; i < recv_data->buffer_count; i++)
+    {
+        free(recv_data->buffers[i]);
+    }
+
+    free(recv_data->buffers);
+}
+
+ssize_t rgcp_recv(int sockfd, struct rgcp_recv_data *recv_data, size_t bytes_to_read, int flags)
 {
     struct rgcp_socket *sock = rgcp_find_by_fd(sockfd);
 
@@ -979,9 +1152,56 @@ ssize_t rgcp_recv(int sockfd, __attribute__((unused)) void *buf, __attribute__((
         return -1;
     }
 
+    if (recv_data == NULL)
+        return -1;
+
     if (sock->connected_to_group == 0)
         return -1;
 
-    errno = ENOTSUP;
-    return -1;
+    recv_data->buffer_length = bytes_to_read;
+
+    ssize_t bytes_read = 0;
+    struct list_head *current, *next;
+    list_for_each_safe(current, next, &sock->group_connection_info.peer_list)
+    {
+        struct rgcp_peer *entry = list_entry(current, struct rgcp_peer, list);
+
+        char *buffer = calloc(bytes_read, sizeof(char));
+
+        printf("recving from %d\n", entry->peer_fd);
+
+        ssize_t res = recv(entry->peer_fd, buffer, bytes_to_read, flags);
+
+        if (res < 0)
+        {
+            // FIXME: client has error
+            free(buffer);
+            printf("ERROR\n");
+            return -1;
+        }
+
+        if (res == 0)
+        {
+            // FIXME: remote is closed
+            free(buffer);
+            printf("NO DATA\n");
+            continue;
+        }
+
+        recv_data->buffer_count++;
+
+        if (recv_data->buffers == NULL)
+            recv_data->buffers = calloc(sizeof(recv_data->buffer_count), sizeof(char *));
+        else
+            recv_data->buffers = realloc(recv_data->buffers, recv_data->buffer_count * sizeof(char));
+
+        if (recv_data->buffers == NULL)
+            return -1;
+        
+        recv_data->buffers[recv_data->buffer_count - 1] = buffer;
+        
+        bytes_read += res;
+    }
+
+    return bytes_read;
 }
