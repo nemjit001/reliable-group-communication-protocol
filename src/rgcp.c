@@ -9,6 +9,27 @@
 
 LIST_HEAD(rgcp_groupfd_list);
 
+struct rgcp_peer
+{
+    struct list_head list;
+    struct sockaddr_in addr;
+    socklen_t addrlen;
+    int peer_fd;
+};
+
+struct rgcp_group_connection_info
+{
+    const char *groupname;
+    struct list_head peer_list;
+};
+
+struct rgcp_listen_socket_info
+{
+    struct sockaddr_in addr;
+    socklen_t addrlen;
+    int listenfd;
+};
+
 struct rgcp_socket
 {
     struct list_head list;
@@ -16,6 +37,9 @@ struct rgcp_socket
     int middlewarefd;
 
     int connected_to_group;
+    struct rgcp_group_connection_info group_connection_info;
+    struct rgcp_listen_socket_info listen_socket_info;
+
     int received_response;
     int thread_comms_channel[2];
 
@@ -76,6 +100,10 @@ int rgcp_unpack(union rgcp_packet_data *data, struct rgcp_packet *packet)
         {
             offset += unpack_group_info_packet(&data->groups.groups[i], packet, offset);
         }
+    }
+    else if (packet->type == RGCP_JOIN_RESPONSE)
+    {
+        return unpack_group_info_packet(&data->group_info, packet, 0) > 0 ? 0 : -1;
     }
     else
     {
@@ -218,15 +246,25 @@ int forward_middleware_request(struct rgcp_socket *sock, struct rgcp_packet *pac
     return res < 0 ? -1 : 0;
 }
 
-int remove_group_member()
+int add_group_member(__attribute__((unused)) struct rgcp_socket *sock, struct rgcp_packet *packet)
 {
-    printf("in remove function\n");
+    union rgcp_packet_data data;
+    memset(&data, 0, sizeof(data));
+
+    if (rgcp_unpack(&data, packet) < 0)
+        return -1;
+
     return 0;
 }
 
-int add_group_member()
+int remove_group_member(__attribute__((unused)) struct rgcp_socket *sock, struct rgcp_packet *packet)
 {
-    printf("in add function\n");
+    union rgcp_packet_data data;
+    memset(&data, 0, sizeof(data));
+
+    if (rgcp_unpack(&data, packet) < 0)
+        return -1;
+
     return 0;
 }
 
@@ -239,10 +277,10 @@ int handle_passive_request(struct rgcp_socket *sock, struct rgcp_packet *packet)
     switch (packet->type)
     {
     case RGCP_NEW_GROUP_MEMBER:
-        res = add_group_member();
+        res = add_group_member(sock, packet);
         break;
     case RGCP_DELETE_GROUP_MEMBER:
-        res = remove_group_member();
+        res = remove_group_member(sock, packet);
         break;
     default:
         break;
@@ -354,7 +392,8 @@ void *middleware_handler_thread(void *arg)
             // handle incoming middleware requests here
             if (handle_middleware_requests(sock) < 0)
             {
-                //TODO: set socket in error state
+                // TODO: set socket in error state
+                // FIXME: how?
             }
         }        
     }
@@ -454,8 +493,60 @@ int wait_with_interupt(int *interupt_signal, useconds_t timeout)
     return (*interupt_signal == 1);
 }
 
-int rgcp_socket_init(int fd, struct rgcp_socket **sock)
+void rgcp_socket_close_all_connections(struct rgcp_socket *sock)
 {
+    struct list_head *current, *next;
+    list_for_each_safe(current, next, &sock->group_connection_info.peer_list)
+    {
+        struct rgcp_peer *entry = list_entry(current, struct rgcp_peer, list);
+
+        if (entry->peer_fd >= 0)
+            close(entry->peer_fd);
+    }
+
+    while (!list_empty(&sock->group_connection_info.peer_list))
+    {
+        struct rgcp_peer *entry = list_first_entry(&sock->group_connection_info.peer_list, struct rgcp_peer, list);
+        list_del(&entry->list);
+        free(entry);
+    }
+}
+
+int create_listen_socket(int *fd, struct sockaddr_in *addr, socklen_t *addrlen)
+{
+    *fd = socket(addr->sin_family, SOCK_STREAM, 0);
+
+    if (*fd < 0)
+        return -1;
+    
+    if (bind(*fd, (struct sockaddr *) addr, *addrlen) < 0)
+    {
+        perror("Bind of local listen socket failed");
+        return -1;
+    }
+
+    if (listen(*fd, SOMAXCONN) < 0)
+    {
+        perror("Listening on local socket failed");
+        return -1;
+    }
+
+    if (getsockname(*fd, (struct sockaddr *)addr, addrlen) < 0)
+    {
+        perror("Getting socket info failed");
+        return -1;
+    }
+    
+    printf("[LIB] created socket on port %d\n", addr->sin_port);
+
+    return 0;
+}
+
+int rgcp_socket_init(int fd, struct rgcp_socket **sock, int domain)
+{
+    if (domain != AF_INET && domain != AF_INET6)
+        return -1;
+
     pthread_t thread_id;
 
     (*sock) = calloc(sizeof(struct rgcp_socket), 1);
@@ -463,6 +554,23 @@ int rgcp_socket_init(int fd, struct rgcp_socket **sock)
     (*sock)->middlewarefd = fd;
     (*sock)->connected_to_group = 0;
     (*sock)->received_response = 0;
+
+    memset(&(*sock)->group_connection_info, 0, sizeof(struct rgcp_group_connection_info));
+    list_init(&(*sock)->group_connection_info.peer_list);
+
+    memset(&(*sock)->listen_socket_info, 0, sizeof(struct rgcp_listen_socket_info));
+
+    struct sockaddr_in *listen_addr = &(*sock)->listen_socket_info.addr;
+
+    listen_addr->sin_addr.s_addr = INADDR_ANY;
+    listen_addr->sin_port = 0; // -> should assign random port
+    listen_addr->sin_family = domain;
+
+    (*sock)->listen_socket_info.addrlen = sizeof(*listen_addr);
+    (*sock)->listen_socket_info.listenfd = -1;
+
+    if (create_listen_socket(&(*sock)->listen_socket_info.listenfd, listen_addr, &(*sock)->listen_socket_info.addrlen) < 0)
+        return -1;
 
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, (*sock)->thread_comms_channel) < 0)
         return -1;
@@ -485,8 +593,13 @@ void rgcp_socket_free(struct rgcp_socket *sock)
     close(sock->thread_comms_channel[0]);
     close(sock->thread_comms_channel[1]);
 
+    close(sock->listen_socket_info.listenfd);
+    sock->listen_socket_info.listenfd = -1;
+
     pthread_kill(sock->middleware_handler_thread_id, SIGALRM);
     pthread_join(sock->middleware_handler_thread_id, NULL);
+
+    rgcp_socket_close_all_connections(sock);
 
     list_del(&sock->list);
     free(sock);
@@ -542,7 +655,7 @@ int rgcp_socket(int domain, struct sockaddr_in *middleware_addr)
     if (connect(fd, (struct sockaddr *) middleware_addr, sizeof(*middleware_addr)) < 0)
         goto error;
 
-    if (rgcp_socket_init(fd, &sock) < 0)
+    if (rgcp_socket_init(fd, &sock, domain) < 0)
         goto error;
 
     return sock->sockfd;
@@ -599,6 +712,7 @@ int rgcp_get_group_info(int sockfd, struct rgcp_group_list *group_list)
 
         return 0;
     error:
+        free(data.groups.groups);
         free(packet);
         pthread_mutex_unlock(&sock->socket_mtx);
         return -1;
@@ -694,11 +808,11 @@ int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group)
         return -1;
     }
 
-    printf("groupname: %s\n", rgcp_group.group_name);
-
     if (sock->connected_to_group == 1)
     {
-        // FIXME: disconnect first
+        // TODO: uncomment when implemented
+        // if (rgcp_disconnect(sockfd) < 0)
+        //     return -1;
     }
 
     union rgcp_packet_data send_data;
@@ -745,36 +859,55 @@ int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group)
         if (packet->type == RGCP_JOIN_ERROR_NAME)
         {
             // FIXME: how to set errno here?
+            printf("[LIB] name error\n");
             goto error;
         }
 
         if (packet->type == RGCP_JOIN_ERROR_NO_SUCH_GROUP)
         {
             // FIXME: how to set errno here?
+            printf("[LIB] no group\n");
             goto error;
         }
 
         if (packet->type == RGCP_JOIN_ERROR_MAX_CLIENTS)
         {
             // FIXME: how to set errno here?
+            printf("[LIB] max clients\n");
             goto error;
         }
 
         if (packet->type == RGCP_JOIN_ERROR_ALREADY_IN_GROUP)
         {
             // FIXME: how to set errno here?
+            printf("[LIB] already in group\n");
             goto error;
         }
 
         // packet must be of type response
-        // TODO: unpack and set socket in connected state
+        if (rgcp_unpack(&recv_data, packet) < 0)
+        {
+            printf("[LIB] unpack failed\n");
+            goto error;
+        }
+        
+        sock->connected_to_group = 1;
+
+        // TODO: connect() to all other peers
+        printf("%s:\n", recv_data.group_info.group_name);
+        for (uint32_t i = 0; i < recv_data.group_info.peer_count; i++)
+        {
+            printf("\t%d %d %d\n", recv_data.group_info.peers[i].addr.sin_addr.s_addr, recv_data.group_info.peers[i].addr.sin_port, recv_data.group_info.peers[i].addr.sin_family);
+        }
 
         free(packet);
+        rgcp_group_info_free(&recv_data.group_info);
         pthread_mutex_unlock(&sock->socket_mtx);
 
         return 0;
     error:
         free(packet);
+        rgcp_group_info_free(&recv_data.group_info);
         pthread_mutex_unlock(&sock->socket_mtx);
         return -1;
     }
@@ -787,6 +920,21 @@ int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group)
     return 0;
 }
 
+int rgcp_disconnect(int sockfd)
+{
+    struct rgcp_socket *sock = rgcp_find_by_fd(sockfd);
+
+    if (sock == NULL)
+    {
+        errno = ENOTSOCK;
+        return -1;
+    }
+
+    errno = ENOTSUP;
+
+    return -1;
+}
+
 int rgcp_close(int sockfd)
 {
     struct rgcp_socket *sock = rgcp_find_by_fd(sockfd);
@@ -797,19 +945,43 @@ int rgcp_close(int sockfd)
         return -1;
     }
 
+    // TODO: notify middleware of close if connected
+
     rgcp_socket_free(sock);
 
     return 0;
 }
 
-ssize_t rgcp_send(__attribute__((unused)) int sockfd, __attribute__((unused)) const void *buf, __attribute__((unused)) size_t len, __attribute__((unused)) int flags)
+ssize_t rgcp_send(int sockfd, __attribute__((unused)) const void *buf, __attribute__((unused)) size_t len, __attribute__((unused)) int flags)
 {
+    struct rgcp_socket *sock = rgcp_find_by_fd(sockfd);
+
+    if (sock == NULL)
+    {
+        errno = ENOTSOCK;
+        return -1;
+    }
+
+    if (sock->connected_to_group == 0)
+        return -1;
+
     errno = ENOTSUP;
     return -1;
 }
 
-ssize_t rgcp_recv(__attribute__((unused)) int sockfd, __attribute__((unused)) void *buf, __attribute__((unused)) size_t len, __attribute__((unused)) int flags)
+ssize_t rgcp_recv(int sockfd, __attribute__((unused)) void *buf, __attribute__((unused)) size_t len, __attribute__((unused)) int flags)
 {
+    struct rgcp_socket *sock = rgcp_find_by_fd(sockfd);
+
+    if (sock == NULL)
+    {
+        errno = ENOTSOCK;
+        return -1;
+    }
+
+    if (sock->connected_to_group == 0)
+        return -1;
+
     errno = ENOTSUP;
     return -1;
 }

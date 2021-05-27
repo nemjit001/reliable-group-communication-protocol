@@ -8,6 +8,7 @@
 
 enum rgcp_request_type
 {
+    RGCP_ADDRINFO_SHARE,
     RGCP_GROUP_DISCOVER,
     RGCP_GROUP_DISCOVER_RESPONSE,
     RGCP_CREATE_GROUP,
@@ -86,6 +87,11 @@ int rgcp_create_group(int sockfd, const char *groupname);
  * @brief Join an RGCP group
  */
 int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group);
+
+/**
+ * @brief Leave an RGCP group
+ */
+int rgcp_disconnect(int sockfd);
 
 /**
  * @brief Free socket resources and leave an RGCP group if connected to one. If a group's last client disconnects or times out, the group is deleted.
