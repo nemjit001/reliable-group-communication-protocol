@@ -45,6 +45,7 @@
 #include <sys/stat.h>
 #include <sys/prctl.h>
 #include <sys/capability.h>
+#include <sys/signalfd.h>
 
 #include <netinet/in.h>
 
