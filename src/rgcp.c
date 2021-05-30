@@ -3,7 +3,7 @@
 #include "systems_headers.h"
 #include "linklist.h"
 
-#define RGCP_MIDDLEWARE_TIMEOUT 300000
+#define RGCP_MIDDLEWARE_TIMEOUT 500000
 
 #define max(a,b) (a > b ? a : b)
 
@@ -1051,9 +1051,24 @@ int rgcp_disconnect(int sockfd)
         return -1;
     }
 
-    errno = ENOTSUP;
+    if (sock->connected_to_group == 0)
+        return 0;
 
-    return -1;
+    union rgcp_packet_data data;
+    memset(&data, 0, sizeof(data));
+
+    data.group_info.name_length = strlen(sock->group_connection_info.groupname) + 1;
+    data.group_info.peer_count = 0;
+
+    data.group_info.group_name = calloc(data.group_info.name_length, sizeof(char));
+    data.group_info.peers = calloc(data.group_info.peer_count, sizeof(struct rgcp_peer_info));
+
+    memcpy(data.group_info.group_name, sock->group_connection_info.groupname, data.group_info.name_length);
+
+    if (rgcp_send_middleware_packet(sock, RGCP_LEAVE_GROUP, &data) < 0)
+        return -1;
+
+    return 0;
 }
 
 int rgcp_close(int sockfd)
@@ -1066,10 +1081,19 @@ int rgcp_close(int sockfd)
         return -1;
     }
 
-    // TODO: notify middleware of close if connected
+    if (sock->middlewarefd == -1)
+    {
+        rgcp_socket_free(sock);
+        return 0;
+    }
+
+    if (rgcp_disconnect(sockfd) < 0)
+    {
+        rgcp_socket_free(sock);
+        return -1;
+    }
 
     rgcp_socket_free(sock);
-
     return 0;
 }
 
@@ -1193,7 +1217,7 @@ ssize_t rgcp_recv(int sockfd, struct rgcp_recv_data *recv_data, size_t bytes_to_
         if (recv_data->buffers == NULL)
             recv_data->buffers = calloc(sizeof(recv_data->buffer_count), sizeof(char *));
         else
-            recv_data->buffers = realloc(recv_data->buffers, recv_data->buffer_count * sizeof(char));
+            recv_data->buffers = realloc(recv_data->buffers, recv_data->buffer_count * sizeof(char *));
 
         if (recv_data->buffers == NULL)
             return -1;
