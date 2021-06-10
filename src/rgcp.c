@@ -3,7 +3,7 @@
 #include "systems_headers.h"
 #include "linklist.h"
 
-#define RGCP_MIDDLEWARE_TIMEOUT 500000
+#define RGCP_MIDDLEWARE_TIMEOUT 10000000
 
 #define max(a,b) (a > b ? a : b)
 
@@ -60,6 +60,7 @@ int unpack_group_info_packet(struct rgcp_group_info *info, struct rgcp_packet *p
         return -1;
 
     memcpy(&info->name_length, packet->data + offset, sizeof(uint32_t));
+
     offset += sizeof(uint32_t);
 
     if (data_length < offset + (info->name_length * sizeof(char)))
@@ -74,6 +75,7 @@ int unpack_group_info_packet(struct rgcp_group_info *info, struct rgcp_packet *p
         return -1;
 
     memcpy(&info->peer_count, packet->data + offset, sizeof(uint32_t));
+
     offset += sizeof(uint32_t);
 
     if (data_length < offset + (info->peer_count * sizeof(struct rgcp_peer_info)))
@@ -81,6 +83,7 @@ int unpack_group_info_packet(struct rgcp_group_info *info, struct rgcp_packet *p
 
     info->peers = calloc(info->peer_count, sizeof(struct rgcp_peer_info));
     memcpy(info->peers, packet->data + offset, info->peer_count * sizeof(struct rgcp_peer_info));
+    
     offset += info->peer_count * sizeof(struct rgcp_peer_info);
 
     return offset;
@@ -115,7 +118,15 @@ int rgcp_unpack(union rgcp_packet_data *data, struct rgcp_packet *packet)
         
         for (uint32_t i = 0; i < data->groups.group_count; i++)
         {
-            offset += unpack_group_info_packet(&data->groups.groups[i], packet, offset);
+            struct rgcp_group_info group;
+            int res = unpack_group_info_packet(&group, packet, offset);
+
+            if (res < 0)
+                return -1;
+
+            offset = res;
+
+            data->groups.groups[i] = group;
         }
     }
     else if (packet->type == RGCP_JOIN_RESPONSE)
@@ -168,11 +179,11 @@ int rgcp_pack(enum rgcp_request_type type, union rgcp_packet_data *data, struct 
     (*packet)->packet_len = sizeof(**packet);
     (*packet)->type = type;
 
-    if (type == RGCP_GROUP_DISCOVER || type == RGCP_LEAVE_GROUP)
+    if (type == RGCP_GROUP_DISCOVER)
     {
         // nothing needs to be set
     }
-    else if (type == RGCP_CREATE_GROUP || type == RGCP_JOIN_GROUP)
+    else if (type == RGCP_CREATE_GROUP || type == RGCP_JOIN_GROUP || type == RGCP_LEAVE_GROUP)
     {
         (*packet)->packet_len +=
             sizeof(data->group_info.name_length) + 
@@ -233,10 +244,7 @@ int rgcp_recv_middleware_packet(struct rgcp_socket *sock, struct rgcp_packet **p
     if (res1 <= 0)
         return -1;
 
-    uint32_t packet_length = 0;
-
-    for (size_t i = 0; i < sizeof(uint32_t); i++)
-        packet_length += (uint8_t)(size_buffer[i] >> (sizeof(uint8_t) - 1 - i));
+    uint32_t packet_length = *((uint32_t *)size_buffer);
 
     if (packet_length == 0)
         return -1;
@@ -274,13 +282,6 @@ void thread_register_signals(int *sfd)
     *sfd = signalfd(-1, &mask, 0);
 }
 
-int forward_middleware_request(struct rgcp_socket *sock, struct rgcp_packet *packet)
-{
-    sock->received_response = 1;
-    int res = write(sock->thread_comms_channel[1], (uint8_t *)packet, packet->packet_len);
-    return res < 0 ? -1 : 0;
-}
-
 int add_group_member(struct rgcp_socket *sock, struct rgcp_packet *packet)
 {
     union rgcp_packet_data data;
@@ -288,8 +289,6 @@ int add_group_member(struct rgcp_socket *sock, struct rgcp_packet *packet)
 
     if (rgcp_unpack(&data, packet) < 0)
         return -1;
-
-    printf("\tadding : %d %d %d\n", data.peer.addr.sin_addr.s_addr, data.peer.addr.sin_family, data.peer.addr.sin_port);
 
     if (sock->listen_socket_info.listenfd < 0)
         return -1;
@@ -300,8 +299,8 @@ int add_group_member(struct rgcp_socket *sock, struct rgcp_packet *packet)
 
     if (peer_addr.sin_addr.s_addr != data.peer.addr.sin_addr.s_addr)
     {
-        printf("AAAA WORNG CLIUENT\n");
-        // FIXME: wrong client?
+        printf("error: unexpected peer adress?\n");
+        return -1;
     }
 
     struct rgcp_peer *peer = calloc(sizeof(struct rgcp_peer), 1);
@@ -322,8 +321,6 @@ int remove_group_member(struct rgcp_socket *sock, struct rgcp_packet *packet)
 
     if (rgcp_unpack(&data, packet) < 0)
         return -1;
-
-    printf("\tremoving : %d %d %d\n", data.peer.addr.sin_addr.s_addr, data.peer.addr.sin_family, data.peer.addr.sin_port);
 
     struct list_head *current, *next;
     list_for_each_safe(current, next, &sock->group_connection_info.peer_list)
@@ -369,6 +366,51 @@ int handle_passive_request(struct rgcp_socket *sock, struct rgcp_packet *packet)
     return res < 0 ? -1 : 0;
 }
 
+int forward_middleware_request(struct rgcp_socket *sock, struct rgcp_packet *packet)
+{
+    sock->received_response = 1;
+    int res = write(sock->thread_comms_channel[1], (uint8_t *)packet, packet->packet_len);
+    return res < 0 ? -1 : 0;
+}
+
+int read_from_thread_comms_channel(int fd, struct rgcp_packet **packet)
+{
+    uint8_t size_buffer[sizeof(uint32_t)];
+    int res1 = read(fd, size_buffer, sizeof(uint32_t));
+
+    // If error remote client has exited unexpectedly or closed socket incorrectly
+    if (res1 < 0)
+        return -1;
+
+    // client closed normally
+    if (res1 == 0)
+        return 0;
+
+    uint32_t packet_length = *((uint32_t *)size_buffer);
+
+    // erronous packet length received, probably due to client crash
+    if (packet_length == 0)
+        return -1;
+
+    uint8_t data_buffer[packet_length - sizeof(uint32_t)];
+    int res2 = read(fd, data_buffer, packet_length - sizeof(uint32_t));
+
+    // second recv call empty check
+    if (res2 < 0)
+        return -1;
+
+    uint8_t packet_buffer[packet_length];
+
+    // copying over to relevant pointer offsets
+    memcpy(packet_buffer, size_buffer, sizeof(uint32_t));
+    memcpy(packet_buffer + sizeof(uint32_t), data_buffer, packet_length - sizeof(uint32_t));
+
+    *packet = calloc(packet_length, 1);
+    memcpy(*packet, packet_buffer, packet_length);
+
+    return res1 + res2;
+}
+
 int handle_middleware_requests(struct rgcp_socket *sock)
 {
     pthread_mutex_lock(&sock->socket_mtx);
@@ -412,7 +454,6 @@ int handle_middleware_requests(struct rgcp_socket *sock)
             break;
     }
 
-
     pthread_mutex_unlock(&sock->socket_mtx);
 
     free(packet);
@@ -435,8 +476,6 @@ void *middleware_handler_thread(void *arg)
         perror("Creating sfd failed");
         abort();
     }
-
-    printf("[LIB] mw thread start for sock %d\n", sock->sockfd);
 
     for (;;)
     {
@@ -482,49 +521,7 @@ void *middleware_handler_thread(void *arg)
         }        
     }
 
-    printf("[LIB] mw thread stopped\n");
     return NULL;
-}
-
-int read_from_thread_comms_channel(int fd, struct rgcp_packet **packet)
-{
-    uint8_t size_buffer[sizeof(uint32_t)];
-    int res1 = read(fd, size_buffer, sizeof(uint32_t));
-
-    // If error remote client has exited unexpectedly or closed socket incorrectly
-    if (res1 < 0)
-        return -1;
-
-    // client closed normally
-    if (res1 == 0)
-        return 0;
-
-    uint32_t packet_length = 0;
-
-    for (size_t i = 0; i < sizeof(uint32_t); i++)
-        packet_length += (uint8_t)(size_buffer[i] >> (sizeof(uint8_t) - 1 - i));
-
-    // erronous packet length received, probably due to client crash
-    if (packet_length == 0)
-        return -1;
-
-    uint8_t data_buffer[packet_length - sizeof(uint32_t)];
-    int res2 = read(fd, data_buffer, packet_length - sizeof(uint32_t));
-
-    // second recv call empty check
-    if (res2 < 0)
-        return -1;
-
-    uint8_t packet_buffer[packet_length];
-
-    // copying over to relevant pointer offsets
-    memcpy(packet_buffer, size_buffer, sizeof(uint32_t));
-    memcpy(packet_buffer + sizeof(uint32_t), data_buffer, packet_length - sizeof(uint32_t));
-
-    *packet = calloc(packet_length, 1);
-    memcpy(*packet, packet_buffer, packet_length);
-
-    return res1 + res2;
 }
 
 int rgcp_get_next_socket_fd()
@@ -620,8 +617,6 @@ int create_listen_socket(int *fd, struct sockaddr_in *addr, socklen_t *addrlen)
         perror("Getting socket info failed");
         return -1;
     }
-    
-    printf("[LIB] created socket on port %d\n", addr->sin_port);
 
     return 0;
 }
@@ -673,15 +668,16 @@ void rgcp_socket_free(struct rgcp_socket *sock)
     if (sock == NULL)
         return;
 
+    pthread_kill(sock->middleware_handler_thread_id, SIGALRM);
+    pthread_join(sock->middleware_handler_thread_id, NULL);
+
     close(sock->middlewarefd);
+    sock->middlewarefd = -1;
     close(sock->thread_comms_channel[0]);
     close(sock->thread_comms_channel[1]);
 
     close(sock->listen_socket_info.listenfd);
     sock->listen_socket_info.listenfd = -1;
-
-    pthread_kill(sock->middleware_handler_thread_id, SIGALRM);
-    pthread_join(sock->middleware_handler_thread_id, NULL);
 
     rgcp_socket_close_all_connections(sock);
     free(sock->group_connection_info.groupname);
@@ -794,8 +790,7 @@ int rgcp_get_group_info(int sockfd, struct rgcp_group_list *group_list)
         if (rgcp_unpack(&data, packet) < 0)
             goto error;
 
-        if (group_list->groups != NULL)
-            free(group_list->groups);
+        memset(group_list, 0, sizeof(*group_list));
 
         group_list->groups = calloc(data.groups.group_count, sizeof(struct rgcp_group_info));
         memcpy(group_list->groups, data.groups.groups, data.groups.group_count * sizeof(struct rgcp_group_info));
@@ -815,6 +810,7 @@ int rgcp_get_group_info(int sockfd, struct rgcp_group_list *group_list)
     else
     {
         // timeout reached return error
+        fprintf(stderr, "[LIB] timeout in group disover\n");
         errno = ETIMEDOUT;
         return -1;
     }
@@ -857,19 +853,32 @@ int rgcp_create_group(int sockfd, const char *groupname)
         struct rgcp_packet *packet = NULL;
 
         if (read_from_thread_comms_channel(sock->thread_comms_channel[0], &packet) < 0)
+        {
+            printf("[LIB] group error: failed to read from communication channel\n");
             goto error;
+        }
 
-        if (packet->type != RGCP_CREATE_GROUP_OK && packet->type != RGCP_CREATE_GROUP_ERROR_NAME && packet->type != RGCP_CREATE_GROUP_ERROR_MAX_GROUPS && packet->type != RGCP_CREATE_GROUP_ERROR_ALREADY_EXISTS)
+        if (
+            packet->type != RGCP_CREATE_GROUP_OK && 
+            packet->type != RGCP_CREATE_GROUP_ERROR_NAME &&
+            packet->type != RGCP_CREATE_GROUP_ERROR_MAX_GROUPS && 
+            packet->type != RGCP_CREATE_GROUP_ERROR_ALREADY_EXISTS
+        )
+        {
+            printf("[LIB] group error: wrong packet type for function call: 0x%x\n", packet->type);
             goto error;
+        }
 
         if (packet->type == RGCP_CREATE_GROUP_ERROR_NAME)
         {
+            printf("[LIB] group error: name too long or zero\n");
             // FIXME: how to set errno here?
             goto error;
         }
 
         if (packet->type == RGCP_CREATE_GROUP_ERROR_MAX_GROUPS)
         {
+            printf("[LIB] group error: max groups reached\n");
             // FIXME: how to set errno here?
             goto error;
         }
@@ -893,6 +902,7 @@ int rgcp_create_group(int sockfd, const char *groupname)
     else
     {
         // timeout reached return error
+        fprintf(stderr, "[LIB] timeout in create group\n");
         errno = ETIMEDOUT;
         return -1;
     }
@@ -912,9 +922,9 @@ int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group)
 
     if (sock->connected_to_group == 1)
     {
-        // TODO: uncomment when implemented
-        // if (rgcp_disconnect(sockfd) < 0)
-        //     return -1;
+        int res = rgcp_disconnect(sockfd);
+        if (res < 0)
+            return res;
     }
 
     union rgcp_packet_data send_data;
@@ -1034,6 +1044,7 @@ int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group)
     }
     else
     {
+        fprintf(stderr, "[LIB] timeout in connect\n");
         errno = ETIMEDOUT;
         return -1;
     }
@@ -1068,6 +1079,8 @@ int rgcp_disconnect(int sockfd)
     if (rgcp_send_middleware_packet(sock, RGCP_LEAVE_GROUP, &data) < 0)
         return -1;
 
+    rgcp_group_info_free(&data.group_info);
+
     return 0;
 }
 
@@ -1097,6 +1110,8 @@ int rgcp_close(int sockfd)
     return 0;
 }
 
+
+
 ssize_t rgcp_send(int sockfd, const void *buf, size_t len, int flags)
 {
     struct rgcp_socket *sock = rgcp_find_by_fd(sockfd);
@@ -1107,38 +1122,77 @@ ssize_t rgcp_send(int sockfd, const void *buf, size_t len, int flags)
         return -1;
     }
 
+    pthread_mutex_lock(&sock->socket_mtx);
+
     if (buf == NULL)
+    {
+        pthread_mutex_unlock(&sock->socket_mtx);
         return -1;
+    }
 
     if (sock->connected_to_group == 0)
+    {
+        pthread_mutex_unlock(&sock->socket_mtx);
         return -1;
+    }
 
+    fd_set write_fds;    
     ssize_t bytes_sent = 0;
+    int max_fd = -1;
     struct list_head *current, *next;
+
+    FD_ZERO(&write_fds);
     list_for_each_safe(current, next, &sock->group_connection_info.peer_list)
     {
         struct rgcp_peer *entry = list_entry(current, struct rgcp_peer, list);
 
-        printf("sending to (%d)\n", entry->peer_fd);
+        FD_SET(entry->peer_fd, &write_fds);
 
-        ssize_t res = send(entry->peer_fd, buf, len, flags);
-
-        if (res < 0)
-        {
-            // FIXME: client has error
-            printf("ERROR\n");
-            return -1;
-        }
-
-        if (res == 0)
-        {
-            // FIXME: remote is closed
-            printf("NO DATA\n");
-            continue;
-        }
-        
-        bytes_sent += res;
+        max_fd = max(max_fd, entry->peer_fd);
     }
+
+    if (max_fd == -1)
+        return 0;
+
+    struct timeval timeout;
+
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 0;
+    
+    if (select(max_fd + 1, NULL, &write_fds, NULL, &timeout) < 0)
+    {
+        perror("Select in rgcp send failed");
+        pthread_mutex_unlock(&sock->socket_mtx);
+        return -1;
+    }
+
+    list_for_each_safe(current, next, &sock->group_connection_info.peer_list)
+    {
+        struct rgcp_peer *entry = list_entry(current, struct rgcp_peer, list);
+
+        if (FD_ISSET(entry->peer_fd, &write_fds))
+        {
+            ssize_t res = 0;
+            res = send(entry->peer_fd, buf, len, flags);
+
+            if (res < 0)
+            {
+                // FIXME: client has error
+                pthread_mutex_unlock(&sock->socket_mtx);
+                return -1;
+            }
+
+            if (res == 0)
+            {
+                // FIXME: remote is closed
+                continue;
+            }
+
+            bytes_sent += res;
+        }
+    }
+
+    pthread_mutex_unlock(&sock->socket_mtx);
 
     return bytes_sent;
 }
@@ -1166,7 +1220,7 @@ void rgcp_recv_data_free(struct rgcp_recv_data *recv_data)
     free(recv_data->buffers);
 }
 
-ssize_t rgcp_recv(int sockfd, struct rgcp_recv_data *recv_data, size_t bytes_to_read, int flags)
+ssize_t rgcp_recv(int sockfd, struct rgcp_recv_data *recv_data, size_t n_bytes, int flags)
 {
     struct rgcp_socket *sock = rgcp_find_by_fd(sockfd);
 
@@ -1176,56 +1230,108 @@ ssize_t rgcp_recv(int sockfd, struct rgcp_recv_data *recv_data, size_t bytes_to_
         return -1;
     }
 
+    pthread_mutex_lock(&sock->socket_mtx);
+
     if (recv_data == NULL)
+    {
+        pthread_mutex_unlock(&sock->socket_mtx);
         return -1;
+    }
 
     if (sock->connected_to_group == 0)
+    {
+        pthread_mutex_unlock(&sock->socket_mtx);
         return -1;
+    }
 
-    recv_data->buffer_length = bytes_to_read;
+    recv_data->buffer_length = n_bytes;
 
+    int peer_count = 0;
     ssize_t bytes_read = 0;
-    struct list_head *current, *next;
+    struct list_head *current = NULL, *next = NULL;
+    int max_fd = -1;
+    fd_set readfds;
+
+    FD_ZERO(&readfds);
+
     list_for_each_safe(current, next, &sock->group_connection_info.peer_list)
     {
         struct rgcp_peer *entry = list_entry(current, struct rgcp_peer, list);
 
-        char *buffer = calloc(bytes_read, sizeof(char));
+        FD_SET(entry->peer_fd, &readfds);
 
-        printf("recving from %d\n", entry->peer_fd);
-
-        ssize_t res = recv(entry->peer_fd, buffer, bytes_to_read, flags);
-
-        if (res < 0)
-        {
-            // FIXME: client has error
-            free(buffer);
-            printf("ERROR\n");
-            return -1;
-        }
-
-        if (res == 0)
-        {
-            // FIXME: remote is closed
-            free(buffer);
-            printf("NO DATA\n");
-            continue;
-        }
-
-        recv_data->buffer_count++;
-
-        if (recv_data->buffers == NULL)
-            recv_data->buffers = calloc(sizeof(recv_data->buffer_count), sizeof(char *));
-        else
-            recv_data->buffers = realloc(recv_data->buffers, recv_data->buffer_count * sizeof(char *));
-
-        if (recv_data->buffers == NULL)
-            return -1;
-        
-        recv_data->buffers[recv_data->buffer_count - 1] = buffer;
-        
-        bytes_read += res;
+        max_fd = max(entry->peer_fd, max_fd);
+        peer_count++;
     }
+
+    // no clients connected
+    if (peer_count == 0)
+    {
+        pthread_mutex_unlock(&sock->socket_mtx);
+        return 0;
+    }
+
+    struct timeval timeout;
+
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 0;
+
+    if (select(max_fd + 1, &readfds, NULL, NULL, &timeout) < 0)
+    {
+        perror("Select in rgcp recv failed");
+        pthread_mutex_unlock(&sock->socket_mtx);
+        return -1;
+    }
+
+    // set list iter vars to NULL again
+    current = NULL;
+    next = NULL;
+
+    list_for_each_safe(current, next, &sock->group_connection_info.peer_list)
+    {
+        struct rgcp_peer *entry = list_entry(current, struct rgcp_peer, list);
+
+        if (FD_ISSET(entry->peer_fd, &readfds))
+        {
+            char *buffer = calloc(n_bytes, sizeof(char));
+
+            ssize_t res = recv(entry->peer_fd, buffer, n_bytes, flags);
+
+            if (res < 0)
+            {
+                // FIXME: client has error
+                free(buffer);
+                pthread_mutex_unlock(&sock->socket_mtx);
+                return -1;
+            }
+
+            if (res == 0)
+            {
+                // FIXME: remote is closed
+                free(buffer);
+                continue;
+            }
+
+            recv_data->buffer_count++;
+
+            if (recv_data->buffers == NULL)
+                recv_data->buffers = calloc(sizeof(recv_data->buffer_count), sizeof(char *));
+            else
+                recv_data->buffers = realloc(recv_data->buffers, recv_data->buffer_count * sizeof(char *));
+
+            if (recv_data->buffers == NULL)
+            {
+                pthread_mutex_unlock(&sock->socket_mtx);
+                return -1;
+            }
+
+            recv_data->buffers[recv_data->buffer_count - 1] = buffer;
+
+            bytes_read += res;    
+        }
+    }
+
+    pthread_mutex_unlock(&sock->socket_mtx);
 
     return bytes_read;
 }
