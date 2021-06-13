@@ -299,7 +299,7 @@ int add_group_member(struct rgcp_socket *sock, struct rgcp_packet *packet)
 
     if (peer_addr.sin_addr.s_addr != data.peer.addr.sin_addr.s_addr)
     {
-        printf("error: unexpected peer adress?\n");
+        fprintf(stderr, "[LIB] error: unexpected peer adress?\n");
         return -1;
     }
 
@@ -505,7 +505,7 @@ void *middleware_handler_thread(void *arg)
             }
             else 
             {
-                printf("Read unexpected signal 0x%x\n", fdsi.ssi_signo);
+                fprintf(stderr, "[LIB] Read unexpected signal 0x%x\n", fdsi.ssi_signo);
                 abort();
             }
         }
@@ -854,7 +854,7 @@ int rgcp_create_group(int sockfd, const char *groupname)
 
         if (read_from_thread_comms_channel(sock->thread_comms_channel[0], &packet) < 0)
         {
-            printf("[LIB] group error: failed to read from communication channel\n");
+            fprintf(stderr, "[LIB] group error: failed to read from communication channel\n");
             goto error;
         }
 
@@ -865,20 +865,20 @@ int rgcp_create_group(int sockfd, const char *groupname)
             packet->type != RGCP_CREATE_GROUP_ERROR_ALREADY_EXISTS
         )
         {
-            printf("[LIB] group error: wrong packet type for function call: 0x%x\n", packet->type);
+            fprintf(stderr, "[LIB] group error: wrong packet type for function call: 0x%x\n", packet->type);
             goto error;
         }
 
         if (packet->type == RGCP_CREATE_GROUP_ERROR_NAME)
         {
-            printf("[LIB] group error: name too long or zero\n");
+            fprintf(stderr, "[LIB] group error: name too long or zero\n");
             // FIXME: how to set errno here?
             goto error;
         }
 
         if (packet->type == RGCP_CREATE_GROUP_ERROR_MAX_GROUPS)
         {
-            printf("[LIB] group error: max groups reached\n");
+            fprintf(stderr, "[LIB] group error: max groups reached\n");
             // FIXME: how to set errno here?
             goto error;
         }
@@ -971,35 +971,35 @@ int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group)
         if (packet->type == RGCP_JOIN_ERROR_NAME)
         {
             // FIXME: how to set errno here?
-            printf("[LIB] name error\n");
+            fprintf(stderr, "[LIB] name error\n");
             goto error;
         }
 
         if (packet->type == RGCP_JOIN_ERROR_NO_SUCH_GROUP)
         {
             // FIXME: how to set errno here?
-            printf("[LIB] no group\n");
+            fprintf(stderr, "[LIB] no group\n");
             goto error;
         }
 
         if (packet->type == RGCP_JOIN_ERROR_MAX_CLIENTS)
         {
             // FIXME: how to set errno here?
-            printf("[LIB] max clients\n");
+            fprintf(stderr, "[LIB] max clients\n");
             goto error;
         }
 
         if (packet->type == RGCP_JOIN_ERROR_ALREADY_IN_GROUP)
         {
             // FIXME: how to set errno here?
-            printf("[LIB] already in group\n");
+            fprintf(stderr, "[LIB] already in group\n");
             goto error;
         }
 
         // packet must be of type response
         if (rgcp_unpack(&recv_data, packet) < 0)
         {
-            printf("[LIB] unpack failed\n");
+            fprintf(stderr, "[LIB] unpack failed\n");
             goto error;
         }
         
@@ -1028,6 +1028,9 @@ int rgcp_connect(int sockfd, struct rgcp_group_info rgcp_group)
         }
 
         // save groupname for when client wants to disconnect
+        if (sock->group_connection_info.groupname != NULL)
+            free(sock->group_connection_info.groupname);
+
         sock->group_connection_info.groupname = calloc(recv_data.group_info.name_length, sizeof(char));
         memcpy(sock->group_connection_info.groupname, recv_data.group_info.group_name, recv_data.group_info.name_length);
 
@@ -1075,6 +1078,8 @@ int rgcp_disconnect(int sockfd)
     data.group_info.peers = calloc(data.group_info.peer_count, sizeof(struct rgcp_peer_info));
 
     memcpy(data.group_info.group_name, sock->group_connection_info.groupname, data.group_info.name_length);
+
+    sock->connected_to_group = 0;
 
     if (rgcp_send_middleware_packet(sock, RGCP_LEAVE_GROUP, &data) < 0)
         return -1;
