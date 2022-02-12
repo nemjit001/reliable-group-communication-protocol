@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(rgcp VERSION 1.0.1 DESCRIPTION "RGCP networking library")
+project(rgcp VERSION 1.1.0 DESCRIPTION "RGCP networking library")
 include(GNUInstallDirs)
 
 set(TARGET_NAME rgcp)
@@ -10,6 +10,8 @@ set(PROJECT_SOURCE_DIR ${CMAKE_SOURCE_DIR}/src)
 set(LIBRARY_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/lib/)
 
 add_library(${TARGET_NAME} SHARED
+    src/details/logger.c
+    src/details/rgcp_socket.c
     src/rgcp.c
 )
 
@@ -24,6 +26,7 @@ set_target_properties(${TARGET_NAME} PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION 1
     PUBLIC_HEADER include/rgcp.h
+    PUBLIC_HEADER include/rgcp_api.h
 )
 
 target_include_directories(${TARGET_NAME} PRIVATE src)

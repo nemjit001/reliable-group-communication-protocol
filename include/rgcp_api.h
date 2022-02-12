@@ -1,0 +1,30 @@
+#ifndef RGCP_API_H
+#define RGCP_API_H
+
+enum RGCP_PACKET_TYPE
+{
+    RGCP_SOCKET_CONNECT,
+    RGCP_SOCKET_DISCONNECT,
+    RGCP_GROUP_DISCOVER,
+    RGCP_GROUP_DISCOVER_RESPONSE,
+    RGCP_GROUP_CREATE,
+    RGCP_GROUP_CREATE_RESPONSE,
+    RGCP_GROUP_JOIN,
+    RGCP_GROUP_JOIN_RESPONSE,
+    RGCP_GROUP_LEAVE,
+    RGCP_PEER_SHARE,
+    RGCP_PEER_REMOVE
+};
+
+enum RGCP_PACKET_ERROR
+{
+
+};
+
+struct rgcp_packet
+{
+    enum RGCP_PACKET_TYPE m_packetType;
+    enum RGCP_PACKET_ERROR m_packetError;
+} __attribute__((packed));
+
+#endif
