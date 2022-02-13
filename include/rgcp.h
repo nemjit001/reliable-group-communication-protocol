@@ -1,7 +1,9 @@
 #ifndef RGCP_H
 #define RGCP_H
 
-#include <sys/socket.h>
+#include "details/rgcp_group.h"
+
+#include <arpa/inet.h>
 
 #ifndef RGCP_SOCKET_TIMEOUT_MS
     #define RGCP_SOCKET_TIMEOUT_MS 10000
@@ -16,20 +18,27 @@ enum RGCP_SEND_FLAGS
     RGCP_SEND_BROADCAST = 1
 };
 
-int rgcp_socket(int domain, struct sockaddr* middlewareAddr, socklen_t* addrlen);
+typedef struct _rgcp_recv_data_t
+{
+    int m_sourceFd;
+    size_t m_bufferSize;
+    uint8_t* m_pDataBuffer;
+} rgcp_recv_data_t;
+
+int rgcp_socket(int domain, struct sockaddr* middlewareAddr, socklen_t addrLen);
 
 int rgcp_close(int sockfd);
 
-int rgcp_discover_groups(int sockfd);
+ssize_t rgcp_discover_groups(int sockfd, rgcp_group_t** ppGroups);
 
 int rgcp_create_group(int sockfd, const char* groupname);
 
-int rgcp_connect(int sockfd);
+int rgcp_connect(int sockfd, rgcp_group_t group);
 
 int rgcp_disconnect(int sockfd);
 
 ssize_t rgcp_send(int sockfd, const char* buf, size_t len, enum RGCP_SEND_FLAGS flags);
 
-ssize_t rgcp_recv(int sockfd);
+ssize_t rgcp_recv(int sockfd, rgcp_recv_data_t** ppRecvDataList);
 
 #endif // RGCP_H

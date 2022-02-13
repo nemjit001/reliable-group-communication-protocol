@@ -11,7 +11,10 @@ set(LIBRARY_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/lib/)
 
 add_library(${TARGET_NAME} SHARED
     src/details/logger.c
+    src/details/rgcp_peer.c
+    src/details/rgcp_group.c
     src/details/rgcp_socket.c
+    src/rgcp_api.c
     src/rgcp.c
 )
 
