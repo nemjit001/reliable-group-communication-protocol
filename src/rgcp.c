@@ -1,6 +1,7 @@
 #include "rgcp.h"
 
 #include "rgcp_api.h"
+#include "details/logger.h"
 #include "details/rgcp_socket.h"
 
 #include <errno.h>
@@ -30,7 +31,7 @@ int _share_host_info(int remoteFd, struct sockaddr_in hostAddr, socklen_t addrLe
     }
 
     pPacket->m_dataLen = packetLength;
-    pPacket->m_packetType = RGCP_TYPE_PEER_SHARE;
+    pPacket->m_packetType = RGCP_TYPE_SOCKET_CONNECT;
     memcpy(pPacket->m_data, pDataBuffer, packetLength);
 
     if (rgcp_api_send(remoteFd, pPacket) < 0)
@@ -46,9 +47,9 @@ int _share_host_info(int remoteFd, struct sockaddr_in hostAddr, socklen_t addrLe
     return 0;
 }
 
-int rgcp_socket(int domain, struct sockaddr* middlewareAddr, socklen_t addrLen)
+int rgcp_socket(int domain, struct sockaddr* middlewareaddr, socklen_t addrlen)
 {
-    assert(middlewareAddr);
+    assert(middlewareaddr);
 
     if (domain != AF_INET && domain != AF_INET6)
     {
@@ -56,7 +57,7 @@ int rgcp_socket(int domain, struct sockaddr* middlewareAddr, socklen_t addrLen)
         return -1;
     }
 
-    if (!middlewareAddr)
+    if (!middlewareaddr)
     {
         errno = EDESTADDRREQ;
         return -1;
@@ -66,7 +67,7 @@ int rgcp_socket(int domain, struct sockaddr* middlewareAddr, socklen_t addrLen)
     if (middlewareFd < 0)
         return -1;
 
-    if (connect(middlewareFd, middlewareAddr, addrLen) < 0)
+    if (connect(middlewareFd, middlewareaddr, addrlen) < 0)
     {
         close(middlewareFd);
         return -1;
@@ -101,7 +102,20 @@ int rgcp_close(int sockfd)
 
     if (rgcp_disconnect(sockfd) < 0)
         goto error;
+    
+    struct rgcp_packet* pPacket;
+    rgcp_packet_init(&pPacket, 0);
 
+    pPacket->m_dataLen = 0;
+    pPacket->m_packetType = RGCP_TYPE_SOCKET_DISCONNECT;
+
+    if (rgcp_api_send(pSocket->m_RGCPSocketFd, pPacket) < 0)
+    {
+        rgcp_packet_free(pPacket);
+        goto error;
+    }
+
+    rgcp_packet_free(pPacket);
 end:
     rgcp_socket_free(pSocket);
     free(pSocket);
@@ -113,8 +127,7 @@ error:
     return -1;
 }
 
-// TODO: implement
-ssize_t rgcp_discover_groups(int sockfd, __attribute__((unused)) rgcp_group_t** ppGroups)
+ssize_t rgcp_discover_groups(int sockfd, __attribute__((unused)) rgcp_group_t** pp_groups)
 {
     rgcp_socket_t* pSocket = NULL;
 
@@ -124,11 +137,76 @@ ssize_t rgcp_discover_groups(int sockfd, __attribute__((unused)) rgcp_group_t** 
         return -1;
     }
 
+    struct rgcp_packet* pPacket;
+    rgcp_packet_init(&pPacket, 0);
+
+    pPacket->m_dataLen = 0;
+    pPacket->m_packetType = RGCP_TYPE_GROUP_DISCOVER;
+
+    if (rgcp_api_send(pSocket->m_RGCPSocketFd, pPacket) < 0)
+    {
+        rgcp_packet_free(pPacket);
+        return -1;
+    }
+
+    rgcp_packet_free(pPacket);
+    // Reusing packet ptr to store response data
+    pPacket = NULL;
+
+    if (rgcp_helper_recv(pSocket, &pPacket, RGCP_SOCKET_TIMEOUT_MS) < 0)
+        return -1;
+
+    log_msg("[Lib][%p] Received Discover Response\n", pSocket);
+    
+    // TODO: handle response
+
     return -1;
 }
 
-// TODO: implement
-int rgcp_create_group(int sockfd, __attribute__((unused)) const char* groupname)
+int rgcp_create_group(int sockfd, const char* groupname, size_t namelen)
+{
+    assert(groupname);
+    rgcp_socket_t* pSocket = NULL;
+
+    if (rgcp_socket_get(sockfd, &pSocket) < 0)
+    {
+        errno = ENOTSOCK;
+        return -1;
+    }
+
+    assert(strlen(groupname) == namelen);
+    if (strlen(groupname) != namelen)
+        return -1;
+
+    struct rgcp_packet* pPacket;
+    rgcp_packet_init(&pPacket, namelen + 1);
+
+    pPacket->m_packetType = RGCP_TYPE_GROUP_CREATE;
+    pPacket->m_dataLen = namelen + 1;
+    memset(pPacket->m_data, 0, namelen + 1);
+    memcpy(pPacket->m_data, groupname, namelen);
+
+    if (rgcp_api_send(pSocket->m_RGCPSocketFd, pPacket) < 0)
+    {
+        rgcp_packet_free(pPacket);
+        return -1;
+    }
+
+    rgcp_packet_free(pPacket);
+    // Reusing packet ptr to store response data
+    pPacket = NULL;
+
+    if (rgcp_helper_recv(pSocket, &pPacket, RGCP_SOCKET_TIMEOUT_MS) < 0)
+        return -1;
+
+    log_msg("[Lib][%p] Create Group Response\n", pSocket);
+    
+    // TODO: handle response
+
+    return -1;
+}
+
+int rgcp_connect(int sockfd, rgcp_group_t group)
 {
     rgcp_socket_t* pSocket = NULL;
 
@@ -138,24 +216,41 @@ int rgcp_create_group(int sockfd, __attribute__((unused)) const char* groupname)
         return -1;
     }
 
-    return -1;
-}
+    uint8_t* pDataBuff = NULL;
+    ssize_t bufferSize = serialize_rgcp_group(&group, pDataBuff);
 
-// TODO: implement
-int rgcp_connect(int sockfd, __attribute__((unused)) rgcp_group_t group)
-{
-    rgcp_socket_t* pSocket = NULL;
+    if (bufferSize < 0)
+        return -1;
 
-    if (rgcp_socket_get(sockfd, &pSocket) < 0)
+    struct rgcp_packet* pPacket;
+    rgcp_packet_init(&pPacket, bufferSize);
+
+    pPacket->m_packetType = RGCP_TYPE_GROUP_JOIN;
+    pPacket->m_dataLen = bufferSize;
+    memcpy(pPacket->m_data, pDataBuff, bufferSize);
+
+    if (rgcp_api_send(pSocket->m_middlewareFd, pPacket) < 0)
     {
-        errno = ENOTSOCK;
+        rgcp_packet_free(pPacket);
+        free(pDataBuff);
         return -1;
     }
 
+    rgcp_packet_free(pPacket);
+    free(pDataBuff);
+    // Reusing packet ptr to store response data
+    pPacket = NULL;
+
+    if (rgcp_helper_recv(pSocket, &pPacket, RGCP_SOCKET_TIMEOUT_MS) < 0)
+        return -1;
+
+    log_msg("[Lib][%p] Received Group Join Response\n", pSocket);
+    
+    // TODO: handle response
+
     return -1;
 }
 
-// TODO: implement
 int rgcp_disconnect(int sockfd)
 {
     rgcp_socket_t* pSocket = NULL;
@@ -166,7 +261,21 @@ int rgcp_disconnect(int sockfd)
         return -1;
     }
 
-    return -1;
+    struct rgcp_packet* pPacket;
+    rgcp_packet_init(&pPacket, 0);
+
+    pPacket->m_dataLen = 0;
+    pPacket->m_packetType = RGCP_TYPE_GROUP_LEAVE;
+
+    if (rgcp_api_send(pSocket->m_RGCPSocketFd, pPacket) < 0)
+    {
+        rgcp_packet_free(pPacket);
+        return -1;
+    }
+
+    rgcp_packet_free(pPacket);
+
+    return 0;
 }
 
 // TODO: implement

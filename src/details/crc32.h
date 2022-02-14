@@ -59,7 +59,7 @@ static const uint32_t table[256] =
     0x2D02EF8DU
 };
 
-uint32_t _compute(const char* data, uint32_t len, uint32_t crc)
+static uint32_t _compute(const char* data, uint32_t len, uint32_t crc)
 {
     crc = crc ^ 0xFFFFFFFFU;
     for (uint32_t i = 0; i < len; i++)

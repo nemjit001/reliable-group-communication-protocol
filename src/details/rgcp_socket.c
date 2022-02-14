@@ -1,10 +1,13 @@
 #include "rgcp_socket.h"
 
-#include "rgcp_api.h"
 #include "logger.h"
+#include "crc32.h"
 
 #include <assert.h>
 #include <unistd.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <string.h>
 
 #define max(a,b) ( ((a) > (b)) ? (a) : (b) )
 
@@ -79,30 +82,27 @@ int rgcp_socket_init(rgcp_socket_t* pSocket, int middlewareFd, int domain)
 
     pSocket->m_helperThreadInfo.m_bShutdownFlag = 0;
 
-    int commSockets[2];
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, commSockets) < 0)
+    if (pipe(pSocket->m_helperThreadInfo.m_helperThreadPipe) < 0)
     {
         close(pSocket->m_middlewareFd);
         close(pSocket->m_listenSocketInfo.m_listenSocket);
         return -1;
     }
-
-    pSocket->m_helperThreadInfo.m_communicationSockets.m_commThreadSocket = commSockets[0];
-    pSocket->m_helperThreadInfo.m_communicationSockets.m_mainThreadSocket = commSockets[1];
 
     if (pthread_mutex_init(&pSocket->m_helperThreadInfo.m_communicationMtx, NULL) < 0)
     {
-        close(commSockets[0]);
-        close(commSockets[1]);
+        close(pSocket->m_helperThreadInfo.m_helperThreadPipe[0]);
+        close(pSocket->m_helperThreadInfo.m_helperThreadPipe[1]);
         close(pSocket->m_middlewareFd);
         close(pSocket->m_listenSocketInfo.m_listenSocket);
         return -1;
     }
 
-    if (pthread_cond_init(&pSocket->m_helperThreadInfo.m_bMiddlewareHasData, NULL) < 0)
+    pSocket->m_helperThreadInfo.m_bMiddlewareHasData = 0;
+    if (pthread_cond_init(&pSocket->m_helperThreadInfo.m_bMiddlewareHasDataCond, NULL) < 0)
     {
-        close(commSockets[0]);
-        close(commSockets[1]);
+        close(pSocket->m_helperThreadInfo.m_helperThreadPipe[0]);
+        close(pSocket->m_helperThreadInfo.m_helperThreadPipe[1]);
         close(pSocket->m_middlewareFd);
         close(pSocket->m_listenSocketInfo.m_listenSocket);
         pthread_mutex_destroy(&pSocket->m_helperThreadInfo.m_communicationMtx);
@@ -111,16 +111,26 @@ int rgcp_socket_init(rgcp_socket_t* pSocket, int middlewareFd, int domain)
 
     if (pthread_create(&pSocket->m_helperThreadInfo.m_communicationThreadHandle, NULL, rgcp_socket_helper_thread, (void*)pSocket) < 0)
     {
-        close(commSockets[0]);
-        close(commSockets[1]);
+        close(pSocket->m_helperThreadInfo.m_helperThreadPipe[0]);
+        close(pSocket->m_helperThreadInfo.m_helperThreadPipe[1]);
         close(pSocket->m_listenSocketInfo.m_listenSocket);
         close(pSocket->m_middlewareFd);
-        pthread_cond_destroy(&pSocket->m_helperThreadInfo.m_bMiddlewareHasData);
+        pthread_cond_destroy(&pSocket->m_helperThreadInfo.m_bMiddlewareHasDataCond);
         pthread_mutex_destroy(&pSocket->m_helperThreadInfo.m_communicationMtx);
         return -1;
     }
 
-    list_init(&(pSocket->m_connectedPeers));
+    list_init(&(pSocket->m_peerData.m_connectedPeers));
+    if (pthread_mutex_init(&(pSocket->m_peerData.m_peerMtx), NULL) < 0)
+    {
+        close(pSocket->m_helperThreadInfo.m_helperThreadPipe[0]);
+        close(pSocket->m_helperThreadInfo.m_helperThreadPipe[1]);
+        close(pSocket->m_listenSocketInfo.m_listenSocket);
+        close(pSocket->m_middlewareFd);
+        pthread_cond_destroy(&pSocket->m_helperThreadInfo.m_bMiddlewareHasDataCond);
+        pthread_mutex_destroy(&pSocket->m_helperThreadInfo.m_communicationMtx);
+        return -1;
+    }
 
     pSocket->m_pSelf = pSocket;
 
@@ -138,11 +148,13 @@ void rgcp_socket_free(rgcp_socket_t* pSocket)
     pSocket->m_helperThreadInfo.m_bShutdownFlag = 1;
 
     pthread_mutex_destroy(&pSocket->m_helperThreadInfo.m_communicationMtx);
-    pthread_cond_destroy(&pSocket->m_helperThreadInfo.m_bMiddlewareHasData);
+    pthread_cond_destroy(&pSocket->m_helperThreadInfo.m_bMiddlewareHasDataCond);
     pthread_join(pSocket->m_helperThreadInfo.m_communicationThreadHandle, NULL);
 
-    close(pSocket->m_helperThreadInfo.m_communicationSockets.m_commThreadSocket);
-    close(pSocket->m_helperThreadInfo.m_communicationSockets.m_mainThreadSocket);
+    pthread_mutex_destroy(&(pSocket->m_peerData.m_peerMtx));
+
+    close(pSocket->m_helperThreadInfo.m_helperThreadPipe[0]);
+    close(pSocket->m_helperThreadInfo.m_helperThreadPipe[1]);
 
     close(pSocket->m_middlewareFd);
     close(pSocket->m_listenSocketInfo.m_listenSocket);
@@ -184,23 +196,173 @@ void* rgcp_socket_helper_thread(void* pSocketInfo)
 
     while(pSocket->m_helperThreadInfo.m_bShutdownFlag == 0)
     {
-        pthread_mutex_lock(&pSocket->m_helperThreadInfo.m_communicationMtx);
-
         struct rgcp_packet* pPacket = NULL;
 
         if (rgcp_api_recv(pSocket->m_middlewareFd, &pPacket) < 0)
         {
-            // FIXME: socket in error state
+            // FIXME: socket in error state, do error handling
         }
 
         log_msg("[Lib][%p] Received Middleware Packet (%d, %d, %u)\n", (void*)pSocket, pPacket->m_packetType, pPacket->m_packetError, pPacket->m_dataLen);
 
-        // TODO: forward to main thread
+        if (rgcp_should_handle_as_helper(pPacket->m_packetType))
+        {
+            // FIXME: do error handling here
+            rgcp_helper_handle_packet(pPacket);
+        }
+        else
+        {
+            // FIXME: do error handling here
+            rgcp_helper_send(pSocket, pPacket);
+        }
         
         rgcp_packet_free(pPacket);
-
-        pthread_mutex_unlock(&pSocket->m_helperThreadInfo.m_communicationMtx);
     }
 
     return NULL;
+}
+
+int rgcp_should_handle_as_helper(enum RGCP_PACKET_TYPE packetType)
+{
+    // NOTE: No error checking is done here yet. If an invalid packet type is specified, the packet is handled by the helper thread and discarded.
+
+    switch (packetType)
+    {
+    case RGCP_TYPE_GROUP_DISCOVER_RESPONSE:
+    case RGCP_TYPE_GROUP_CREATE_RESPONSE:
+    case RGCP_TYPE_GROUP_JOIN_RESPONSE:
+        return 0;
+    case RGCP_TYPE_PEER_SHARE:
+    case RGCP_TYPE_PEER_REMOVE:
+        return 1;
+    default:
+        break;
+    }
+
+    return 1;
+}
+
+int rgcp_helper_handle_packet(struct rgcp_packet* pPacket)
+{
+    // TODO: handle packet
+    switch (pPacket->m_packetType)
+    {
+    case RGCP_TYPE_PEER_SHARE:
+        {
+            // TODO: deserialize packet data and add peer
+            // rgcp_socket_add_peer(peerInfo);
+        }
+        break;
+    case RGCP_TYPE_PEER_REMOVE:
+        {
+            // TODO: deserialize packet data and remove peer
+            // rgcp_socket_remove_peer(peerInfo);
+        }
+        break;
+    default:
+        break;
+    }
+
+    return -1;
+}
+
+int rgcp_helper_recv(rgcp_socket_t* pSocket, struct rgcp_packet** ppPacket, time_t timeoutMS)
+{
+    assert(pSocket);
+    assert(ppPacket);
+    assert(timeoutMS >= 0);
+
+    if (!pSocket || !ppPacket || timeoutMS < 0)
+        return -1;
+
+    pthread_mutex_lock(&pSocket->m_helperThreadInfo.m_communicationMtx);
+
+    uint32_t ptrSize = 0;
+    uint8_t* pBuffer = NULL;
+
+    struct timespec waitTime;
+    if (clock_gettime(CLOCK_REALTIME, &waitTime) < 0)
+        goto error;
+    
+    // set timeout from ms to ns
+    waitTime.tv_nsec += (timeoutMS * 1000000 /* 1,000,000 */);
+
+    int rc = 0;
+    while(!(pSocket->m_helperThreadInfo.m_bMiddlewareHasData) && rc == 0)
+        rc = pthread_cond_timedwait(&(pSocket->m_helperThreadInfo.m_bMiddlewareHasDataCond), &(pSocket->m_helperThreadInfo.m_communicationMtx), &waitTime);
+
+    if (rc == ETIMEDOUT)
+    {
+        errno = ETIMEDOUT;
+        return -1;
+    }
+
+    if (read(pSocket->m_helperThreadInfo.m_helperThreadPipe[0], &ptrSize, sizeof(uint32_t)) < 0)
+        goto error;
+
+    if (ptrSize == 0)
+        goto error;
+
+    if (read(pSocket->m_helperThreadInfo.m_helperThreadPipe[0], pBuffer, ptrSize) < 0)
+        goto error;
+
+    if (pBuffer == NULL)
+        goto error;
+
+    *ppPacket = (struct rgcp_packet*)(pBuffer);
+
+    uint32_t packetHash = CRC32_STR_DYNAMIC((char*)pBuffer, ptrSize);
+    assert((*ppPacket)->m_packetHash == packetHash);
+
+    if ((*ppPacket)->m_packetHash != packetHash)
+        goto error;
+
+    pSocket->m_helperThreadInfo.m_bMiddlewareHasData = 0;
+    pthread_mutex_unlock(&pSocket->m_helperThreadInfo.m_communicationMtx);
+    return ptrSize;
+
+error:
+    (*ppPacket) = NULL;
+    pthread_mutex_unlock(&pSocket->m_helperThreadInfo.m_communicationMtx);
+    return -1;
+}
+
+int rgcp_helper_send(rgcp_socket_t* pSocket, struct rgcp_packet* pPacket)
+{
+    assert(pSocket);
+    assert(pPacket);
+
+    if (!pSocket || !pPacket)
+        return -1;
+
+    pthread_mutex_lock(&pSocket->m_helperThreadInfo.m_communicationMtx);
+    
+    uint32_t ptrSize = (sizeof(struct rgcp_packet) + pPacket->m_dataLen);
+    uint8_t* pBuffer = NULL;
+    pBuffer = calloc(ptrSize, sizeof(uint8_t));
+
+    if (pBuffer == NULL)
+        return -1;
+
+    memcpy(pBuffer, pPacket, ptrSize);
+
+    if (write(pSocket->m_helperThreadInfo.m_helperThreadPipe[1], &ptrSize, sizeof(uint32_t)) < 0)
+    {
+        free(pBuffer);
+        return -1;
+    }
+    
+    if (write(pSocket->m_helperThreadInfo.m_helperThreadPipe[1], pBuffer, ptrSize) < 0)
+    {
+        free(pBuffer);
+        return -1;
+    }
+
+    free(pBuffer);
+
+    pSocket->m_helperThreadInfo.m_bMiddlewareHasData = 1;
+    pthread_cond_broadcast(&(pSocket->m_helperThreadInfo.m_bMiddlewareHasDataCond));
+    pthread_mutex_unlock(&pSocket->m_helperThreadInfo.m_communicationMtx);
+
+    return 0;
 }
