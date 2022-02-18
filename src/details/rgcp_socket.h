@@ -5,7 +5,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
-#include "linked_list.h"
+#include "details/linked_list.h"
 #include "rgcp_api.h"
 
 typedef struct _rgcp_socket_t

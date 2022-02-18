@@ -2,6 +2,7 @@
 
 #include "rgcp_api.h"
 #include "details/logger.h"
+#include "details/rgcp_group.h"
 #include "details/rgcp_socket.h"
 
 #include <errno.h>
@@ -15,7 +16,10 @@ int _share_host_info(int remoteFd, struct sockaddr_in hostAddr, socklen_t addrLe
     hostInfo.m_addressLength = addrLen;
 
     uint8_t* pDataBuffer = NULL;
-    ssize_t packetLength = serialize_rgcp_peer_info(&hostInfo, pDataBuffer);
+    ssize_t packetLength = serialize_rgcp_peer_info(&hostInfo, &pDataBuffer);
+
+    if (!pDataBuffer)
+        return -1;
 
     if (packetLength < 0)
     {
@@ -98,10 +102,13 @@ int rgcp_close(int sockfd)
 
     if (pSocket->m_middlewareFd < 0)
         goto end;
-    
+
+    log_msg("[Lib] Closing, Group Disconnect\n");
 
     if (rgcp_disconnect(sockfd) < 0)
         goto error;
+
+    log_msg("[Lib] Group Disconnect Done\n");
     
     struct rgcp_packet* pPacket;
     rgcp_packet_init(&pPacket, 0);
@@ -109,11 +116,13 @@ int rgcp_close(int sockfd)
     pPacket->m_dataLen = 0;
     pPacket->m_packetType = RGCP_TYPE_SOCKET_DISCONNECT;
 
-    if (rgcp_api_send(pSocket->m_RGCPSocketFd, pPacket) < 0)
+    if (rgcp_api_send(pSocket->m_middlewareFd, pPacket) < 0)
     {
         rgcp_packet_free(pPacket);
         goto error;
     }
+
+    log_msg("[Lib] Socket Disconnect Done\n");
 
     rgcp_packet_free(pPacket);
 end:
@@ -122,12 +131,14 @@ end:
     return 0;
 
 error:
+    log_msg("[Lib] Disconnect Error\n");
+
     rgcp_socket_free(pSocket);
     free(pSocket);
     return -1;
 }
 
-ssize_t rgcp_discover_groups(int sockfd, __attribute__((unused)) rgcp_group_t** pp_groups)
+ssize_t rgcp_discover_groups(int sockfd, __attribute__((unused)) rgcp_group_info_t** pp_groups)
 {
     rgcp_socket_t* pSocket = NULL;
 
@@ -143,7 +154,8 @@ ssize_t rgcp_discover_groups(int sockfd, __attribute__((unused)) rgcp_group_t** 
     pPacket->m_dataLen = 0;
     pPacket->m_packetType = RGCP_TYPE_GROUP_DISCOVER;
 
-    if (rgcp_api_send(pSocket->m_RGCPSocketFd, pPacket) < 0)
+    log_msg("[Lib] Sending Discover Request\n");
+    if (rgcp_api_send(pSocket->m_middlewareFd, pPacket) < 0)
     {
         rgcp_packet_free(pPacket);
         return -1;
@@ -160,7 +172,7 @@ ssize_t rgcp_discover_groups(int sockfd, __attribute__((unused)) rgcp_group_t** 
     
     // TODO: handle response
 
-    return -1;
+    return 0;
 }
 
 int rgcp_create_group(int sockfd, const char* groupname, size_t namelen)
@@ -186,7 +198,7 @@ int rgcp_create_group(int sockfd, const char* groupname, size_t namelen)
     memset(pPacket->m_data, 0, namelen + 1);
     memcpy(pPacket->m_data, groupname, namelen);
 
-    if (rgcp_api_send(pSocket->m_RGCPSocketFd, pPacket) < 0)
+    if (rgcp_api_send(pSocket->m_middlewareFd, pPacket) < 0)
     {
         rgcp_packet_free(pPacket);
         return -1;
@@ -206,7 +218,7 @@ int rgcp_create_group(int sockfd, const char* groupname, size_t namelen)
     return -1;
 }
 
-int rgcp_connect(int sockfd, rgcp_group_t group)
+int rgcp_connect(int sockfd, rgcp_group_info_t group)
 {
     rgcp_socket_t* pSocket = NULL;
 
@@ -216,8 +228,9 @@ int rgcp_connect(int sockfd, rgcp_group_t group)
         return -1;
     }
 
+    rgcp_group_t rgcpGroup = rgcp_group_from_info(group);
     uint8_t* pDataBuff = NULL;
-    ssize_t bufferSize = serialize_rgcp_group(&group, pDataBuff);
+    ssize_t bufferSize = serialize_rgcp_group(&rgcpGroup, pDataBuff);
 
     if (bufferSize < 0)
         return -1;
@@ -254,7 +267,7 @@ int rgcp_connect(int sockfd, rgcp_group_t group)
 int rgcp_disconnect(int sockfd)
 {
     rgcp_socket_t* pSocket = NULL;
-
+    
     if (rgcp_socket_get(sockfd, &pSocket) < 0)
     {
         errno = ENOTSOCK;
@@ -267,11 +280,15 @@ int rgcp_disconnect(int sockfd)
     pPacket->m_dataLen = 0;
     pPacket->m_packetType = RGCP_TYPE_GROUP_LEAVE;
 
-    if (rgcp_api_send(pSocket->m_RGCPSocketFd, pPacket) < 0)
+    log_msg("[Lib] Group Disconnect Notice\n");
+
+    if (rgcp_api_send(pSocket->m_middlewareFd, pPacket) < 0)
     {
         rgcp_packet_free(pPacket);
         return -1;
     }
+
+    log_msg("[Lib] Group Disconnect Notice Sent\n");
 
     rgcp_packet_free(pPacket);
 

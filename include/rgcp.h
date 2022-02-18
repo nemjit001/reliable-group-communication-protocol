@@ -1,8 +1,6 @@
 #ifndef RGCP_H
 #define RGCP_H
 
-#include "details/rgcp_group.h"
-
 #include <arpa/inet.h>
 
 #ifndef RGCP_SOCKET_TIMEOUT_MS
@@ -25,15 +23,22 @@ typedef struct _rgcp_recv_data_t
     uint8_t* m_pDataBuffer;
 } rgcp_recv_data_t;
 
+typedef struct _rgcp_group_info_t
+{
+    uint32_t m_groupNameHash;
+    size_t m_groupNameLength;
+    char* m_pGroupName;
+} rgcp_group_info_t;
+
 int rgcp_socket(int domain, struct sockaddr* middlewareaddr, socklen_t addrlen);
 
 int rgcp_close(int sockfd);
 
-ssize_t rgcp_discover_groups(int sockfd, rgcp_group_t** pp_groups);
+ssize_t rgcp_discover_groups(int sockfd, rgcp_group_info_t** pp_groups);
 
 int rgcp_create_group(int sockfd, const char* groupname, size_t namelen);
 
-int rgcp_connect(int sockfd, rgcp_group_t group);
+int rgcp_connect(int sockfd, rgcp_group_info_t group);
 
 int rgcp_disconnect(int sockfd);
 

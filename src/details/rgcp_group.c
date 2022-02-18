@@ -1,4 +1,4 @@
-#include "rgcp_group.h"
+#include "details/rgcp_group.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -67,16 +67,16 @@ ssize_t serialize_rgcp_group(rgcp_group_t* pGroup, uint8_t* pOutBuffer)
     for (size_t i = 0; i < pGroup->m_peerList.m_peerInfoCount; i++)
     {
         size_t peerOffset = sizeof(struct _rgcp_peer_info) * i;
-        uint8_t* peerInfoBuffer = NULL;
-        serialize_rgcp_peer_info(&(pGroup->m_peerList.m_pPeerInfos[i]), peerInfoBuffer);
+        uint8_t* pPeerInfoBuffer = NULL;
+        serialize_rgcp_peer_info(&(pGroup->m_peerList.m_pPeerInfos[i]), &pPeerInfoBuffer);
 
         memcpy(
             pOutBuffer + ptrOffset + peerOffset,
-            peerInfoBuffer,
+            pPeerInfoBuffer,
             sizeof(struct _rgcp_peer_info)
         );
 
-        free(peerInfoBuffer);
+        free(pPeerInfoBuffer);
     }
 
     return (nameInfoSize + peerListSize);
@@ -157,4 +157,16 @@ int deserialize_rgcp_group(rgcp_group_t* pGroup, uint8_t* pDataBuffer, size_t bu
     }
 
     return 0;
+}
+
+rgcp_group_t rgcp_group_from_info(rgcp_group_info_t groupInfo)
+{
+    rgcp_group_t group;
+    memset(&group, 0, sizeof(rgcp_group_t));
+    group.m_groupNameInfo.m_groupNameHash = groupInfo.m_groupNameHash;
+    group.m_groupNameInfo.m_groupNameLength = groupInfo.m_groupNameLength;
+    group.m_groupNameInfo.m_pGroupName = calloc(group.m_groupNameInfo.m_groupNameLength + 1, sizeof(char));
+    memcpy(group.m_groupNameInfo.m_pGroupName, groupInfo.m_pGroupName, group.m_groupNameInfo.m_groupNameLength + 1);
+
+    return group;
 }

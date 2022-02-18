@@ -19,7 +19,7 @@ struct _rgcp_peer_connection
     struct _rgcp_peer_info m_peerInfo;
 };
 
-ssize_t serialize_rgcp_peer_info(struct _rgcp_peer_info* pPeerInfo, uint8_t* pOutBuffer);
+ssize_t serialize_rgcp_peer_info(struct _rgcp_peer_info* pPeerInfo, uint8_t** ppOutBuffer);
 
 int deserialize_rgcp_peer_info(struct _rgcp_peer_info* pPeerInfo, uint8_t* pDataBuffer, size_t bufferSize);
 

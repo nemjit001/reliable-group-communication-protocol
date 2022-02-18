@@ -1,23 +1,23 @@
-#include "rgcp_peer.h"
+#include "details/rgcp_peer.h"
 
 #include <stdlib.h>
 #include <string.h>
 
-ssize_t serialize_rgcp_peer_info(struct _rgcp_peer_info* pPeerInfo, uint8_t* pOutBuffer)
+ssize_t serialize_rgcp_peer_info(struct _rgcp_peer_info* pPeerInfo, uint8_t** ppOutBuffer)
 {
     assert(pPeerInfo);
 
     if (!pPeerInfo)
         return -1;
 
-    size_t peerInfoSize = sizeof(*pPeerInfo);
+    size_t peerInfoSize = sizeof(struct _rgcp_peer_info);
 
-    pOutBuffer = NULL;
-    pOutBuffer = calloc(peerInfoSize, sizeof(uint8_t));
-    if (!pOutBuffer)
+    *ppOutBuffer = NULL;
+    *ppOutBuffer = calloc(peerInfoSize, sizeof(uint8_t));
+    if (!(*ppOutBuffer))
         return -1;
 
-    memcpy(pOutBuffer, pPeerInfo, peerInfoSize);
+    memcpy((*ppOutBuffer), pPeerInfo, peerInfoSize);
     return peerInfoSize;
 }
 

@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(rgcp VERSION 1.1.0 DESCRIPTION "RGCP networking library")
 include(GNUInstallDirs)
+include(CTest)
 
 set(TARGET_NAME rgcp)
 
@@ -28,8 +29,7 @@ target_link_libraries(${TARGET_NAME} dl)
 set_target_properties(${TARGET_NAME} PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION 1
-    PUBLIC_HEADER include/rgcp.h
-    PUBLIC_HEADER include/rgcp_api.h
+    PUBLIC_HEADER "include/rgcp.h;include/rgcp_api.h"
 )
 
 target_include_directories(${TARGET_NAME} PRIVATE src)
@@ -37,5 +37,21 @@ target_include_directories(${TARGET_NAME} PRIVATE include)
 
 install(TARGETS ${TARGET_NAME}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rgcp/
 )
+
+# Testing Setup
+set(EXECUTABLE_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/bin/)
+
+add_executable(ApiTest
+    test/ApiTest.c
+)
+target_link_libraries(ApiTest dl rgcp)
+
+add_executable(StartupShutdown
+    test/StartupShutdown.c
+)
+target_link_libraries(StartupShutdown dl rgcp)
+
+add_test(NAME "StartupShutdown" COMMAND StartupShutdown)
+add_test(NAME "API" COMMAND ApiTest)

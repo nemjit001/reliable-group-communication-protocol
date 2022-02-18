@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
+#include <poll.h>
 
 #define max(a,b) ( ((a) > (b)) ? (a) : (b) )
 
@@ -194,6 +195,11 @@ void* rgcp_socket_helper_thread(void* pSocketInfo)
     if (pSocket->m_pSelf != pSocket)
         return NULL;
 
+    struct pollfd remoteFd;
+    remoteFd.fd = pSocket->m_middlewareFd;
+    remoteFd.events = POLLIN;
+    remoteFd.revents = 0;
+
     while(pSocket->m_helperThreadInfo.m_bShutdownFlag == 0)
     {
         struct rgcp_packet* pPacket = NULL;
@@ -284,9 +290,13 @@ int rgcp_helper_recv(rgcp_socket_t* pSocket, struct rgcp_packet** ppPacket, time
     if (clock_gettime(CLOCK_REALTIME, &waitTime) < 0)
         goto error;
     
-    // set timeout from ms to ns
-    waitTime.tv_nsec += (timeoutMS * 1000000 /* 1,000,000 */);
+    uint32_t timeoutNs = (timeoutMS * 1000000) % 1000000;
+    uint32_t timeoutSeconds = (timeoutMS / 1000);
 
+    // set timeout from ms to ns
+    waitTime.tv_sec += timeoutSeconds;
+    waitTime.tv_nsec += timeoutNs;
+    
     int rc = 0;
     while(!(pSocket->m_helperThreadInfo.m_bMiddlewareHasData) && rc == 0)
         rc = pthread_cond_timedwait(&(pSocket->m_helperThreadInfo.m_bMiddlewareHasDataCond), &(pSocket->m_helperThreadInfo.m_communicationMtx), &waitTime);
@@ -361,8 +371,8 @@ int rgcp_helper_send(rgcp_socket_t* pSocket, struct rgcp_packet* pPacket)
     free(pBuffer);
 
     pSocket->m_helperThreadInfo.m_bMiddlewareHasData = 1;
-    pthread_cond_broadcast(&(pSocket->m_helperThreadInfo.m_bMiddlewareHasDataCond));
     pthread_mutex_unlock(&pSocket->m_helperThreadInfo.m_communicationMtx);
+    pthread_cond_broadcast(&(pSocket->m_helperThreadInfo.m_bMiddlewareHasDataCond));
 
     return 0;
 }

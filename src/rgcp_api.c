@@ -7,6 +7,8 @@
 #include <string.h>
 #include <sys/socket.h>
 
+#include <stdio.h>
+
 int rgcp_packet_init(struct rgcp_packet** ppPacket, size_t dataLen)
 {
     assert(ppPacket);
@@ -57,13 +59,20 @@ ssize_t rgcp_api_recv(int fd, struct rgcp_packet** ppPacket)
         return -1;
     }
 
-    uint32_t packetHash = CRC32_STR_DYNAMIC((char*)buffer, packetLength);
-
     memcpy(*ppPacket, buffer, packetLength);
     free(buffer);
-    
-    if (packetHash != (*ppPacket)->m_packetHash)
+
+    uint32_t recveivedHash = (*ppPacket)->m_packetHash;
+    (*ppPacket)->m_packetHash = 0;
+    uint32_t actualPacketHash = CRC32_STR_DYNAMIC((char*)(*ppPacket), packetLength);
+
+    assert(recveivedHash == actualPacketHash);
+
+    if (recveivedHash != actualPacketHash)
+    {
+        rgcp_packet_free(*ppPacket);
         return -1;
+    }
 
     return packetLength;
 }
@@ -79,15 +88,11 @@ ssize_t rgcp_api_send(int fd, struct rgcp_packet* pPacket)
     if (!buffer)
         return -1;
 
+    pPacket->m_packetHash = 0;
+    uint32_t packetHash = CRC32_STR_DYNAMIC((char*)(pPacket), packetSize);
+    pPacket->m_packetHash = packetHash;
+    
     memcpy(buffer, pPacket, packetSize);
-    uint32_t packetHash = CRC32_STR_DYNAMIC((char*)buffer, packetSize);
-
-    assert(packetHash == pPacket->m_packetHash);
-    if (packetHash != pPacket->m_packetHash)
-    {
-        free(buffer);
-        return -1;
-    }
 
     if (send(fd, &packetSize, sizeof(uint32_t), 0) < 0)
     {

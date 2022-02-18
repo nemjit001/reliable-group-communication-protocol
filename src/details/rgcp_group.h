@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 
+#include "rgcp.h"
 #include "rgcp_peer.h"
 
 struct _rgcp_group_t
@@ -31,5 +32,7 @@ void rgcp_group_free(rgcp_group_t group);
 ssize_t serialize_rgcp_group(rgcp_group_t* pGroup, uint8_t* pOutBuffer);
 
 int deserialize_rgcp_group(rgcp_group_t* pGroup, uint8_t* pDataBuffer, size_t bufferSize);
+
+rgcp_group_t rgcp_group_from_info(rgcp_group_info_t groupInfo);
 
 #endif
