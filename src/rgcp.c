@@ -2,8 +2,8 @@
 
 #include "rgcp_api.h"
 #include "details/logger.h"
-#include "details/rgcp_group.h"
 #include "details/rgcp_socket.h"
+#include "rgcp_group.h"
 
 #include <errno.h>
 #include <unistd.h>

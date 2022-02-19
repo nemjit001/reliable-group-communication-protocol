@@ -23,11 +23,17 @@ int main()
     ssize_t groupCount = rgcp_discover_groups(fd, &pGroups);
 
     if (groupCount < 0 || pGroups == NULL)
+    {
+        rgcp_close(fd);
         ErrorReport("Group Discover 1 Failed");
+    }
 
     const char* groupname = "TEST_GROUP";
     if (rgcp_create_group(fd, groupname, sizeof(groupname)) < 0)
+    {
+        rgcp_close(fd);
         ErrorReport("Group Creation Failed");
+    }
 
     pGroups = NULL;
     groupCount = rgcp_discover_groups(fd, &pGroups);
@@ -46,10 +52,16 @@ int main()
     }
 
     if (rgcp_connect(fd, *pTargetGroup) < 0)
+    {
+        rgcp_close(fd);
         ErrorReport("Group Connect Failed");
+    }
     
     if (rgcp_disconnect(fd) < 0)
+    {
+        rgcp_close(fd);
         ErrorReport("Group Disconnect Failed");
+    }
 
     rgcp_close(fd);
 

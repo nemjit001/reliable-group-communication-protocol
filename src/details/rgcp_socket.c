@@ -202,27 +202,35 @@ void* rgcp_socket_helper_thread(void* pSocketInfo)
 
     while(pSocket->m_helperThreadInfo.m_bShutdownFlag == 0)
     {
-        struct rgcp_packet* pPacket = NULL;
-
-        if (rgcp_api_recv(pSocket->m_middlewareFd, &pPacket) < 0)
+        if (poll(&remoteFd, 1, 0) < 0)
         {
-            // FIXME: socket in error state, do error handling
+            // FIXME: socket in error state
         }
 
-        log_msg("[Lib][%p] Received Middleware Packet (%d, %d, %u)\n", (void*)pSocket, pPacket->m_packetType, pPacket->m_packetError, pPacket->m_dataLen);
+        if (remoteFd.revents & POLLIN)
+        {
+            struct rgcp_packet* pPacket = NULL;
 
-        if (rgcp_should_handle_as_helper(pPacket->m_packetType))
-        {
-            // FIXME: do error handling here
-            rgcp_helper_handle_packet(pPacket);
+            if (rgcp_api_recv(pSocket->m_middlewareFd, &pPacket) < 0)
+            {
+                // FIXME: socket in error state, do error handling
+            }
+
+            log_msg("[Lib][%p] Received Middleware Packet (%d, %d, %u)\n", (void*)pSocket, pPacket->m_packetType, pPacket->m_packetError, pPacket->m_dataLen);
+
+            if (rgcp_should_handle_as_helper(pPacket->m_packetType))
+            {
+                // FIXME: do error handling here
+                rgcp_helper_handle_packet(pPacket);
+            }
+            else
+            {
+                // FIXME: do error handling here
+                rgcp_helper_send(pSocket, pPacket);
+            }
+            
+            rgcp_packet_free(pPacket);
         }
-        else
-        {
-            // FIXME: do error handling here
-            rgcp_helper_send(pSocket, pPacket);
-        }
-        
-        rgcp_packet_free(pPacket);
     }
 
     return NULL;

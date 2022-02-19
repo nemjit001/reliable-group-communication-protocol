@@ -6,7 +6,16 @@
 #include <sys/socket.h>
 
 #include "details/linked_list.h"
+#include "rgcp_peer.h"
 #include "rgcp_api.h"
+
+struct _rgcp_peer_connection
+{
+    struct list_entry m_listEntry;
+    int m_remoteFd;
+
+    struct _rgcp_peer_info m_peerInfo;
+};
 
 typedef struct _rgcp_socket_t
 {

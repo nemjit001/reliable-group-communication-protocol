@@ -29,7 +29,7 @@ target_link_libraries(${TARGET_NAME} dl)
 set_target_properties(${TARGET_NAME} PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION 1
-    PUBLIC_HEADER "include/rgcp.h;include/rgcp_api.h"
+    PUBLIC_HEADER "include/rgcp.h;include/rgcp_api.h;include/rgcp_group.h;include/rgcp_peer.h"
 )
 
 target_include_directories(${TARGET_NAME} PRIVATE src)

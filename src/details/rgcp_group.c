@@ -1,5 +1,6 @@
-#include "details/rgcp_group.h"
+#include "rgcp_group.h"
 
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 
