@@ -19,34 +19,44 @@ int main()
     if (fd < 0)
         ErrorReport("Socket init failed");
 
-    rgcp_group_info_t* pGroups = NULL;
-    ssize_t groupCount = rgcp_discover_groups(fd, &pGroups);
+    rgcp_group_info_t** ppGroups = NULL;
+    ssize_t groupCount = rgcp_discover_groups(fd, &ppGroups);
 
-    if (groupCount < 0 || pGroups == NULL)
+    for (ssize_t i = 0; i < groupCount; i++)
+    {
+        printf("[%ld] 0x%x %s\n", i, ppGroups[i]->m_groupNameHash, ppGroups[i]->m_pGroupName);
+    }
+
+    if (groupCount < 0)
     {
         rgcp_close(fd);
         ErrorReport("Group Discover 1 Failed");
     }
 
     const char* groupname = "TEST_GROUP";
-    if (rgcp_create_group(fd, groupname, sizeof(groupname)) < 0)
+    if (rgcp_create_group(fd, groupname, strlen(groupname)) < 0)
     {
         rgcp_close(fd);
         ErrorReport("Group Creation Failed");
     }
 
-    pGroups = NULL;
-    groupCount = rgcp_discover_groups(fd, &pGroups);
+    ppGroups = NULL;
+    groupCount = rgcp_discover_groups(fd, &ppGroups);
 
-    if (groupCount < 0 || pGroups == NULL)
+    if (groupCount < 0)
         ErrorReport("Group Discover 2 Failed");
+
+    for (ssize_t i = 0; i < groupCount; i++)
+    {
+        printf("[%ld] 0x%x %s\n", i, ppGroups[i]->m_groupNameHash, ppGroups[i]->m_pGroupName);
+    }
 
     rgcp_group_info_t *pTargetGroup = NULL;
     for (ssize_t i = 0; i < groupCount; i++)
     {
-        if (strcmp(pGroups[i].m_pGroupName, groupname) == 0)
+        if (strcmp(ppGroups[i]->m_pGroupName, groupname) == 0)
         {
-            pTargetGroup = &(pGroups[i]);
+            pTargetGroup = ppGroups[i];
             break;
         }
     }

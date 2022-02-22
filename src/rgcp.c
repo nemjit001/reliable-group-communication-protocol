@@ -122,23 +122,36 @@ int rgcp_close(int sockfd)
         goto error;
     }
 
-    log_msg("[Lib] Socket Disconnect Done\n");
+    rgcp_packet_free(pPacket);
+    // Reusing packet ptr to store response data
+    pPacket = NULL;
+
+    if (rgcp_helper_recv(pSocket, &pPacket, RGCP_SOCKET_TIMEOUT_MS) < 0)
+        goto error;
+
+    if (pPacket->m_packetType != RGCP_TYPE_SOCKET_DISCONNECT_RESPONSE || pPacket->m_packetError != RGCP_ERROR_NO_ERROR)
+    { 
+        rgcp_packet_free(pPacket);
+        goto error;
+    }
 
     rgcp_packet_free(pPacket);
+    log_msg("[Lib] Socket Disconnect Done\n");
+    
 end:
     rgcp_socket_free(pSocket);
     free(pSocket);
     return 0;
 
 error:
-    log_msg("[Lib] Disconnect Error\n");
+    log_msg("[Lib] Disconnect Error, cleaning up anyway\n");
 
     rgcp_socket_free(pSocket);
     free(pSocket);
     return -1;
 }
 
-ssize_t rgcp_discover_groups(int sockfd, __attribute__((unused)) rgcp_group_info_t** pp_groups)
+ssize_t rgcp_discover_groups(int sockfd, rgcp_group_info_t*** ppp_groups)
 {
     rgcp_socket_t* pSocket = NULL;
 
@@ -170,9 +183,47 @@ ssize_t rgcp_discover_groups(int sockfd, __attribute__((unused)) rgcp_group_info
 
     log_msg("[Lib][%p] Received Discover Response\n", pSocket);
     
-    // TODO: handle response
+    if (pPacket->m_packetType != RGCP_TYPE_GROUP_DISCOVER_RESPONSE || pPacket->m_packetError != RGCP_ERROR_NO_ERROR)
+    { 
+        rgcp_packet_free(pPacket);
+        return -1;
+    }
 
-    return 0;
+    if (pPacket->m_dataLen == 0)
+    {
+        rgcp_packet_free(pPacket);
+        return 0;
+    }
+
+    // deserialize group name info
+    size_t ptrOffset = 0;
+    size_t groupInfoCount = 0;
+    while(ptrOffset < pPacket->m_dataLen)
+    {
+        uint32_t ptrSize = 0;
+        memcpy(&ptrSize, pPacket->m_data + ptrOffset, sizeof(uint32_t));
+        ptrOffset += sizeof(uint32_t);
+
+        assert(ptrSize > 0);
+        rgcp_group_info_t* pGroupInfo = calloc(sizeof(rgcp_group_info_t), 1);
+        if (deserialize_rgcp_group_name_info(pGroupInfo, pPacket->m_data + ptrOffset, ptrSize) < 0)
+        {
+            log_msg("[Lib] Group Info deserialization failed\n");
+            rgcp_packet_free(pPacket);
+            return -1;
+        }
+
+        ptrOffset += (pGroupInfo->m_groupNameLength + 1 + sizeof(pGroupInfo->m_groupNameHash) + sizeof(pGroupInfo->m_groupNameLength));
+        
+        log_msg("[Lib][GroupInfo] 0x%x %u %s\n", pGroupInfo->m_groupNameHash, pGroupInfo->m_groupNameLength, pGroupInfo->m_pGroupName);
+        groupInfoCount++;
+
+        (*ppp_groups) = realloc((*ppp_groups), groupInfoCount * sizeof(rgcp_group_info_t*));
+        (*ppp_groups)[groupInfoCount - 1] = pGroupInfo;
+    }
+
+    rgcp_packet_free(pPacket);
+    return groupInfoCount;
 }
 
 int rgcp_create_group(int sockfd, const char* groupname, size_t namelen)
@@ -195,8 +246,8 @@ int rgcp_create_group(int sockfd, const char* groupname, size_t namelen)
 
     pPacket->m_packetType = RGCP_TYPE_GROUP_CREATE;
     pPacket->m_dataLen = namelen + 1;
-    memset(pPacket->m_data, 0, namelen + 1);
     memcpy(pPacket->m_data, groupname, namelen);
+    pPacket->m_data[namelen] = '\0';
 
     if (rgcp_api_send(pSocket->m_middlewareFd, pPacket) < 0)
     {
@@ -213,9 +264,14 @@ int rgcp_create_group(int sockfd, const char* groupname, size_t namelen)
 
     log_msg("[Lib][%p] Create Group Response\n", pSocket);
     
-    // TODO: handle response
+    if (pPacket->m_packetType != RGCP_TYPE_GROUP_CREATE_RESPONSE || pPacket->m_packetError != RGCP_ERROR_NO_ERROR)
+    { 
+        rgcp_packet_free(pPacket);
+        return -1;
+    }
 
-    return -1;
+    rgcp_packet_free(pPacket);
+    return 0;
 }
 
 int rgcp_connect(int sockfd, rgcp_group_info_t group)
@@ -230,7 +286,7 @@ int rgcp_connect(int sockfd, rgcp_group_info_t group)
 
     rgcp_group_t rgcpGroup = rgcp_group_from_info(group);
     uint8_t* pDataBuff = NULL;
-    ssize_t bufferSize = serialize_rgcp_group(&rgcpGroup, pDataBuff);
+    ssize_t bufferSize = serialize_rgcp_group(&rgcpGroup, &pDataBuff);
 
     if (bufferSize < 0)
         return -1;
@@ -261,6 +317,7 @@ int rgcp_connect(int sockfd, rgcp_group_info_t group)
     
     // TODO: handle response
 
+    rgcp_packet_free(pPacket);
     return -1;
 }
 
@@ -291,7 +348,6 @@ int rgcp_disconnect(int sockfd)
     log_msg("[Lib] Group Disconnect Notice Sent\n");
 
     rgcp_packet_free(pPacket);
-
     return 0;
 }
 

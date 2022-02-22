@@ -2,6 +2,7 @@
 #define CRC32
 
 #include <stdint.h>
+#include <stdio.h>
 
 static const uint32_t table[256] =
 {
@@ -64,8 +65,8 @@ static uint32_t _compute(const char* data, uint32_t len, uint32_t crc)
     crc = crc ^ 0xFFFFFFFFU;
     for (uint32_t i = 0; i < len; i++)
     {
-        crc = table[*data ^ (crc & 0xFF)] ^ (crc >> 8);
-        data++;
+        const char* ptr = (data + i);
+        crc = table[((*ptr) & 0xFF) ^ (crc & 0xFF)] ^ (crc >> 8);
     }
     crc = crc ^ 0xFFFFFFFFU;
     return crc;

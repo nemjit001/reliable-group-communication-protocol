@@ -1,5 +1,5 @@
-#ifndef RGCP_PEER
-#define RGCP_PEER
+#ifndef RGCP_LIB_PEER_H
+#define RGCP_LIB_PEER_H
 
 #include <arpa/inet.h>
 

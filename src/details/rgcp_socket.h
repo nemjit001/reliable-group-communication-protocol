@@ -60,7 +60,7 @@ void* rgcp_socket_helper_thread(void* pSocketInfo);
 
 int rgcp_should_handle_as_helper(enum RGCP_PACKET_TYPE packetType);
 
-int rgcp_helper_handle_packet(struct rgcp_packet* pPacket);
+int rgcp_helper_handle_packet(rgcp_socket_t* pSocket, struct rgcp_packet* pPacket);
 
 int rgcp_helper_recv(rgcp_socket_t* pSocket, struct rgcp_packet** ppPacket, time_t timeoutMS);
 

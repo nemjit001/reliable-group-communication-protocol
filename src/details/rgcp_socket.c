@@ -210,10 +210,13 @@ void* rgcp_socket_helper_thread(void* pSocketInfo)
         if (remoteFd.revents & POLLIN)
         {
             struct rgcp_packet* pPacket = NULL;
+            ssize_t bytesReceived = rgcp_api_recv(pSocket->m_middlewareFd, &pPacket);
 
-            if (rgcp_api_recv(pSocket->m_middlewareFd, &pPacket) < 0)
+            if (bytesReceived <= 0)
             {
                 // FIXME: socket in error state, do error handling
+                log_msg("[Lib][%p] Error in API receive (received %d bytes, packet ptr is \"%p\")\n", (void*)pSocket, bytesReceived, (void*)pPacket);
+                return NULL;
             }
 
             log_msg("[Lib][%p] Received Middleware Packet (%d, %d, %u)\n", (void*)pSocket, pPacket->m_packetType, pPacket->m_packetError, pPacket->m_dataLen);
@@ -221,7 +224,7 @@ void* rgcp_socket_helper_thread(void* pSocketInfo)
             if (rgcp_should_handle_as_helper(pPacket->m_packetType))
             {
                 // FIXME: do error handling here
-                rgcp_helper_handle_packet(pPacket);
+                rgcp_helper_handle_packet(pSocket, pPacket);
             }
             else
             {
@@ -248,6 +251,7 @@ int rgcp_should_handle_as_helper(enum RGCP_PACKET_TYPE packetType)
         return 0;
     case RGCP_TYPE_PEER_SHARE:
     case RGCP_TYPE_PEER_REMOVE:
+    case RGCP_TYPE_SOCKET_DISCONNECT_RESPONSE:
         return 1;
     default:
         break;
@@ -256,7 +260,7 @@ int rgcp_should_handle_as_helper(enum RGCP_PACKET_TYPE packetType)
     return 1;
 }
 
-int rgcp_helper_handle_packet(struct rgcp_packet* pPacket)
+int rgcp_helper_handle_packet(rgcp_socket_t* pSocket, struct rgcp_packet* pPacket)
 {
     // TODO: handle packet
     switch (pPacket->m_packetType)
@@ -273,11 +277,18 @@ int rgcp_helper_handle_packet(struct rgcp_packet* pPacket)
             // rgcp_socket_remove_peer(peerInfo);
         }
         break;
+    case RGCP_TYPE_SOCKET_DISCONNECT_RESPONSE:
+        {
+            pSocket->m_helperThreadInfo.m_bShutdownFlag = 1;
+            if (rgcp_helper_send(pSocket, pPacket) < 0)
+                return -1;
+        }
+        break;
     default:
         break;
     }
 
-    return -1;
+    return 0;
 }
 
 int rgcp_helper_recv(rgcp_socket_t* pSocket, struct rgcp_packet** ppPacket, time_t timeoutMS)
@@ -288,8 +299,6 @@ int rgcp_helper_recv(rgcp_socket_t* pSocket, struct rgcp_packet** ppPacket, time
 
     if (!pSocket || !ppPacket || timeoutMS < 0)
         return -1;
-
-    pthread_mutex_lock(&pSocket->m_helperThreadInfo.m_communicationMtx);
 
     uint32_t ptrSize = 0;
     uint8_t* pBuffer = NULL;
@@ -306,7 +315,7 @@ int rgcp_helper_recv(rgcp_socket_t* pSocket, struct rgcp_packet** ppPacket, time
     waitTime.tv_nsec += timeoutNs;
     
     int rc = 0;
-    while(!(pSocket->m_helperThreadInfo.m_bMiddlewareHasData) && rc == 0)
+    while((pSocket->m_helperThreadInfo.m_bMiddlewareHasData == 0) && rc == 0)
         rc = pthread_cond_timedwait(&(pSocket->m_helperThreadInfo.m_bMiddlewareHasDataCond), &(pSocket->m_helperThreadInfo.m_communicationMtx), &waitTime);
 
     if (rc == ETIMEDOUT)
@@ -321,22 +330,27 @@ int rgcp_helper_recv(rgcp_socket_t* pSocket, struct rgcp_packet** ppPacket, time
     if (ptrSize == 0)
         goto error;
 
-    if (read(pSocket->m_helperThreadInfo.m_helperThreadPipe[0], pBuffer, ptrSize) < 0)
+    pBuffer = calloc(ptrSize, sizeof(uint8_t));
+
+    assert(pBuffer);
+    if (!pBuffer)
         goto error;
 
-    if (pBuffer == NULL)
+    if (read(pSocket->m_helperThreadInfo.m_helperThreadPipe[0], pBuffer, ptrSize) < 0)
         goto error;
 
     *ppPacket = (struct rgcp_packet*)(pBuffer);
 
-    uint32_t packetHash = CRC32_STR_DYNAMIC((char*)pBuffer, ptrSize);
-    assert((*ppPacket)->m_packetHash == packetHash);
+    uint32_t receivedPacketHash = (*ppPacket)->m_packetHash;
+    (*ppPacket)->m_packetHash = 0;
+    uint32_t actualPacketHash = CRC32_STR_DYNAMIC((char*)(*ppPacket), ptrSize);
 
-    if ((*ppPacket)->m_packetHash != packetHash)
+    assert(actualPacketHash == receivedPacketHash);
+    if (actualPacketHash != receivedPacketHash)
         goto error;
 
     pSocket->m_helperThreadInfo.m_bMiddlewareHasData = 0;
-    pthread_mutex_unlock(&pSocket->m_helperThreadInfo.m_communicationMtx);
+
     return ptrSize;
 
 error:
@@ -349,12 +363,13 @@ int rgcp_helper_send(rgcp_socket_t* pSocket, struct rgcp_packet* pPacket)
 {
     assert(pSocket);
     assert(pPacket);
+    assert(pSocket->m_helperThreadInfo.m_bMiddlewareHasData == 0);
 
     if (!pSocket || !pPacket)
         return -1;
 
     pthread_mutex_lock(&pSocket->m_helperThreadInfo.m_communicationMtx);
-    
+
     uint32_t ptrSize = (sizeof(struct rgcp_packet) + pPacket->m_dataLen);
     uint8_t* pBuffer = NULL;
     pBuffer = calloc(ptrSize, sizeof(uint8_t));
@@ -362,6 +377,8 @@ int rgcp_helper_send(rgcp_socket_t* pSocket, struct rgcp_packet* pPacket)
     if (pBuffer == NULL)
         return -1;
 
+    pPacket->m_packetHash = 0;
+    pPacket->m_packetHash = CRC32_STR_DYNAMIC((char*)pPacket, ptrSize);
     memcpy(pBuffer, pPacket, ptrSize);
 
     if (write(pSocket->m_helperThreadInfo.m_helperThreadPipe[1], &ptrSize, sizeof(uint32_t)) < 0)
@@ -379,6 +396,7 @@ int rgcp_helper_send(rgcp_socket_t* pSocket, struct rgcp_packet* pPacket)
     free(pBuffer);
 
     pSocket->m_helperThreadInfo.m_bMiddlewareHasData = 1;
+
     pthread_mutex_unlock(&pSocket->m_helperThreadInfo.m_communicationMtx);
     pthread_cond_broadcast(&(pSocket->m_helperThreadInfo.m_bMiddlewareHasDataCond));
 

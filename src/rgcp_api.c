@@ -88,6 +88,9 @@ ssize_t rgcp_api_send(int fd, struct rgcp_packet* pPacket)
     if (!buffer)
         return -1;
 
+    if (pPacket->m_dataLen > 0)
+        assert(pPacket->m_data);
+
     pPacket->m_packetHash = 0;
     uint32_t packetHash = CRC32_STR_DYNAMIC((char*)(pPacket), packetSize);
     pPacket->m_packetHash = packetHash;
