@@ -1,6 +1,8 @@
 #ifndef RGCP_SOCKET
 #define RGCP_SOCKET
 
+#define _GNU_SOURCE
+
 #include <pthread.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>

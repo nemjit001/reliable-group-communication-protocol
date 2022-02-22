@@ -7,6 +7,14 @@
 
 #include "ErrorReport.h"
 
+void _print_groups(rgcp_group_info_t **ppGroupInfo, ssize_t groupCount)
+{
+    for (ssize_t i = 0; i < groupCount; i++)
+    {
+        printf("[Group #%ld] 0x%x %s\n", i + 1, ppGroupInfo[i]->m_groupNameHash, ppGroupInfo[i]->m_pGroupName);
+    }
+}
+
 int main()
 {
     struct sockaddr_in mwAddr;
@@ -22,10 +30,7 @@ int main()
     rgcp_group_info_t** ppGroups = NULL;
     ssize_t groupCount = rgcp_discover_groups(fd, &ppGroups);
 
-    for (ssize_t i = 0; i < groupCount; i++)
-    {
-        printf("[%ld] 0x%x %s\n", i, ppGroups[i]->m_groupNameHash, ppGroups[i]->m_pGroupName);
-    }
+    _print_groups(ppGroups, groupCount);
 
     if (groupCount < 0)
     {
@@ -40,16 +45,14 @@ int main()
         ErrorReport("Group Creation Failed");
     }
 
+    rgcp_free_group_infos(&ppGroups, groupCount);
     ppGroups = NULL;
     groupCount = rgcp_discover_groups(fd, &ppGroups);
 
     if (groupCount < 0)
         ErrorReport("Group Discover 2 Failed");
 
-    for (ssize_t i = 0; i < groupCount; i++)
-    {
-        printf("[%ld] 0x%x %s\n", i, ppGroups[i]->m_groupNameHash, ppGroups[i]->m_pGroupName);
-    }
+    _print_groups(ppGroups, groupCount);
 
     rgcp_group_info_t *pTargetGroup = NULL;
     for (ssize_t i = 0; i < groupCount; i++)
@@ -63,16 +66,19 @@ int main()
 
     if (rgcp_connect(fd, *pTargetGroup) < 0)
     {
+        rgcp_free_group_infos(&ppGroups, groupCount);
         rgcp_close(fd);
         ErrorReport("Group Connect Failed");
     }
     
     if (rgcp_disconnect(fd) < 0)
     {
+        rgcp_free_group_infos(&ppGroups, groupCount);
         rgcp_close(fd);
         ErrorReport("Group Disconnect Failed");
     }
 
+    rgcp_free_group_infos(&ppGroups, groupCount);
     rgcp_close(fd);
 
     return 0;

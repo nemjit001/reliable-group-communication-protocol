@@ -36,7 +36,9 @@ int rgcp_socket(int domain, struct sockaddr* middlewareaddr, socklen_t addrlen);
 
 int rgcp_close(int sockfd);
 
-ssize_t rgcp_discover_groups(int sockfd, rgcp_group_info_t*** ppp_groups);
+ssize_t rgcp_discover_groups(int sockfd, rgcp_group_info_t*** ppp_group_infos);
+
+int rgcp_free_group_infos(rgcp_group_info_t*** ppp_group_infos, ssize_t group_count);
 
 int rgcp_create_group(int sockfd, const char* groupname, size_t namelen);
 

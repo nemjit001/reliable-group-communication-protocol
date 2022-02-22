@@ -107,8 +107,6 @@ int rgcp_close(int sockfd)
 
     if (rgcp_disconnect(sockfd) < 0)
         goto error;
-
-    log_msg("[Lib] Group Disconnect Done\n");
     
     struct rgcp_packet* pPacket;
     rgcp_packet_init(&pPacket, 0);
@@ -151,7 +149,7 @@ error:
     return -1;
 }
 
-ssize_t rgcp_discover_groups(int sockfd, rgcp_group_info_t*** ppp_groups)
+ssize_t rgcp_discover_groups(int sockfd, rgcp_group_info_t*** ppp_group_infos)
 {
     rgcp_socket_t* pSocket = NULL;
 
@@ -218,12 +216,31 @@ ssize_t rgcp_discover_groups(int sockfd, rgcp_group_info_t*** ppp_groups)
         log_msg("[Lib][GroupInfo] 0x%x %u %s\n", pGroupInfo->m_groupNameHash, pGroupInfo->m_groupNameLength, pGroupInfo->m_pGroupName);
         groupInfoCount++;
 
-        (*ppp_groups) = realloc((*ppp_groups), groupInfoCount * sizeof(rgcp_group_info_t*));
-        (*ppp_groups)[groupInfoCount - 1] = pGroupInfo;
+        (*ppp_group_infos) = realloc((*ppp_group_infos), groupInfoCount * sizeof(rgcp_group_info_t*));
+        (*ppp_group_infos)[groupInfoCount - 1] = pGroupInfo;
     }
 
     rgcp_packet_free(pPacket);
     return groupInfoCount;
+}
+
+int rgcp_free_group_infos(rgcp_group_info_t*** ppp_group_infos, ssize_t group_count)
+{
+    assert(ppp_group_infos);
+
+    if (group_count < 0)
+        return -1;
+
+    for (ssize_t i = 0; i < group_count; i++)
+    {
+        free((*ppp_group_infos)[i]->m_pGroupName);
+        free((*ppp_group_infos)[i]);
+    }
+
+    free(*ppp_group_infos);
+    (*ppp_group_infos) = NULL;
+
+    return 0;
 }
 
 int rgcp_create_group(int sockfd, const char* groupname, size_t namelen)
@@ -287,6 +304,7 @@ int rgcp_connect(int sockfd, rgcp_group_info_t group)
     rgcp_group_t rgcpGroup = rgcp_group_from_info(group);
     uint8_t* pDataBuff = NULL;
     ssize_t bufferSize = serialize_rgcp_group(&rgcpGroup, &pDataBuff);
+    rgcp_group_free(rgcpGroup);
 
     if (bufferSize < 0)
         return -1;
@@ -336,8 +354,6 @@ int rgcp_disconnect(int sockfd)
 
     pPacket->m_dataLen = 0;
     pPacket->m_packetType = RGCP_TYPE_GROUP_LEAVE;
-
-    log_msg("[Lib] Group Disconnect Notice\n");
 
     if (rgcp_api_send(pSocket->m_middlewareFd, pPacket) < 0)
     {

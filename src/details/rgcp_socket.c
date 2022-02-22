@@ -157,7 +157,9 @@ void rgcp_socket_free(rgcp_socket_t* pSocket)
     close(pSocket->m_helperThreadInfo.m_helperThreadPipe[0]);
     close(pSocket->m_helperThreadInfo.m_helperThreadPipe[1]);
 
+    shutdown(pSocket->m_middlewareFd, SHUT_RDWR);
     close(pSocket->m_middlewareFd);
+
     close(pSocket->m_listenSocketInfo.m_listenSocket);
     
     pthread_mutex_lock(&g_socketListMtx);
@@ -197,7 +199,7 @@ void* rgcp_socket_helper_thread(void* pSocketInfo)
 
     struct pollfd remoteFd;
     remoteFd.fd = pSocket->m_middlewareFd;
-    remoteFd.events = POLLIN;
+    remoteFd.events = POLLIN | POLLRDHUP;
     remoteFd.revents = 0;
 
     while(pSocket->m_helperThreadInfo.m_bShutdownFlag == 0)
@@ -207,7 +209,15 @@ void* rgcp_socket_helper_thread(void* pSocketInfo)
             // FIXME: socket in error state
         }
 
-        if (remoteFd.revents & POLLIN)
+        if (remoteFd.revents & POLLRDHUP)
+        {
+            // socket in invalid state
+
+            log_msg("[Lib][%p] Middleware closed connection\n", (void*)pSocket);
+            pSocket->m_helperThreadInfo.m_bShutdownFlag = 1;
+            return NULL;
+        }
+        else if (remoteFd.revents & POLLIN)
         {
             struct rgcp_packet* pPacket = NULL;
             ssize_t bytesReceived = rgcp_api_recv(pSocket->m_middlewareFd, &pPacket);
