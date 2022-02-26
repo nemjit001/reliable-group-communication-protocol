@@ -12,6 +12,7 @@
 
 #define max(a,b) ( ((a) > (b)) ? (a) : (b) )
 
+static pthread_mutex_t g_socketInitMtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_socketListMtx = PTHREAD_MUTEX_INITIALIZER;
 LIST_HEAD(g_rgcpSocketList);
 
@@ -25,18 +26,24 @@ int _get_next_fd()
         rgcp_socket_t* pSocket = LIST_ENTRY(pCurr, rgcp_socket_t, m_listEntry);
         maxFd = max(pSocket->m_RGCPSocketFd, maxFd) + 1;
     }
-
+    
     return maxFd;
 }
 
-int _create_listen_socket(int domain, struct sockaddr_in* addrinfo, socklen_t addrlen)
+int _create_listen_socket(int domain, struct sockaddr_in* addrinfo, socklen_t *addrlen)
 {
     int fd = socket(domain, SOCK_STREAM, IPPROTO_TCP);
 
     if (fd < 0)
         return -1;
     
-    if (bind(fd, (struct sockaddr*)addrinfo, addrlen) < 0)
+    if (bind(fd, (struct sockaddr*)addrinfo, *addrlen) < 0)
+    {
+        close(fd);
+        return -1;
+    }
+
+    if (getsockname(fd, (struct sockaddr*)addrinfo, addrlen) < 0)
     {
         close(fd);
         return -1;
@@ -51,14 +58,16 @@ int _create_listen_socket(int domain, struct sockaddr_in* addrinfo, socklen_t ad
     return fd;
 }
 
-int rgcp_socket_init(rgcp_socket_t* pSocket, int middlewareFd, int domain)
+int rgcp_socket_init(rgcp_socket_t* pSocket, int middlewareFd, int domain, time_t heartbeatPeriodSeconds)
 {
     assert(pSocket);
-    log_msg("[Lib] Initializing RGCP Socket @ %p\n", (void*)pSocket);
 
     if (domain != AF_INET && domain != AF_INET6)
         return -1;
 
+    pthread_mutex_lock(&g_socketInitMtx);
+
+    pSocket->m_heartbeatPeriod = heartbeatPeriodSeconds;
     pSocket->m_middlewareFd = middlewareFd;
     pSocket->m_RGCPSocketFd = _get_next_fd();
 
@@ -72,21 +81,34 @@ int rgcp_socket_init(rgcp_socket_t* pSocket, int middlewareFd, int domain)
     pSocket->m_listenSocketInfo.m_listenSocket = _create_listen_socket(
         domain, 
         &pSocket->m_listenSocketInfo.m_hostAdress, 
-        pSocket->m_listenSocketInfo.m_hostAdressLength
+        &pSocket->m_listenSocketInfo.m_hostAdressLength
     );
+
+    if (pthread_mutex_init(&pSocket->m_socketMtx, NULL) < 0)
+    {
+        close(pSocket->m_listenSocketInfo.m_listenSocket);
+        pthread_mutex_unlock(&g_socketInitMtx);
+        return -1;
+    }
+
+    pSocket->m_pSelf = pSocket;
+    pSocket->m_helperThreadInfo.m_bShutdownFlag = 0;
+    pSocket->m_helperThreadInfo.m_bMiddlewareHasData = 0;
+
+    list_init(&(pSocket->m_peerData.m_connectedPeers));
 
     if (pSocket->m_listenSocketInfo.m_listenSocket < 0)
     {
         close(pSocket->m_middlewareFd);
+        pthread_mutex_unlock(&g_socketInitMtx);
         return -1;
     }
-
-    pSocket->m_helperThreadInfo.m_bShutdownFlag = 0;
 
     if (pipe(pSocket->m_helperThreadInfo.m_helperThreadPipe) < 0)
     {
         close(pSocket->m_middlewareFd);
         close(pSocket->m_listenSocketInfo.m_listenSocket);
+        pthread_mutex_unlock(&g_socketInitMtx);
         return -1;
     }
 
@@ -96,10 +118,10 @@ int rgcp_socket_init(rgcp_socket_t* pSocket, int middlewareFd, int domain)
         close(pSocket->m_helperThreadInfo.m_helperThreadPipe[1]);
         close(pSocket->m_middlewareFd);
         close(pSocket->m_listenSocketInfo.m_listenSocket);
+        pthread_mutex_unlock(&g_socketInitMtx);
         return -1;
     }
 
-    pSocket->m_helperThreadInfo.m_bMiddlewareHasData = 0;
     if (pthread_cond_init(&pSocket->m_helperThreadInfo.m_bMiddlewareHasDataCond, NULL) < 0)
     {
         close(pSocket->m_helperThreadInfo.m_helperThreadPipe[0]);
@@ -107,6 +129,7 @@ int rgcp_socket_init(rgcp_socket_t* pSocket, int middlewareFd, int domain)
         close(pSocket->m_middlewareFd);
         close(pSocket->m_listenSocketInfo.m_listenSocket);
         pthread_mutex_destroy(&pSocket->m_helperThreadInfo.m_communicationMtx);
+        pthread_mutex_unlock(&g_socketInitMtx);
         return -1;
     }
 
@@ -118,10 +141,10 @@ int rgcp_socket_init(rgcp_socket_t* pSocket, int middlewareFd, int domain)
         close(pSocket->m_middlewareFd);
         pthread_cond_destroy(&pSocket->m_helperThreadInfo.m_bMiddlewareHasDataCond);
         pthread_mutex_destroy(&pSocket->m_helperThreadInfo.m_communicationMtx);
+        pthread_mutex_unlock(&g_socketInitMtx);
         return -1;
     }
 
-    list_init(&(pSocket->m_peerData.m_connectedPeers));
     if (pthread_mutex_init(&(pSocket->m_peerData.m_peerMtx), NULL) < 0)
     {
         close(pSocket->m_helperThreadInfo.m_helperThreadPipe[0]);
@@ -130,14 +153,17 @@ int rgcp_socket_init(rgcp_socket_t* pSocket, int middlewareFd, int domain)
         close(pSocket->m_middlewareFd);
         pthread_cond_destroy(&pSocket->m_helperThreadInfo.m_bMiddlewareHasDataCond);
         pthread_mutex_destroy(&pSocket->m_helperThreadInfo.m_communicationMtx);
+        pthread_mutex_unlock(&g_socketInitMtx);
         return -1;
     }
-
-    pSocket->m_pSelf = pSocket;
 
     pthread_mutex_lock(&g_socketListMtx);
     list_add_tail(&pSocket->m_listEntry, &g_rgcpSocketList);
     pthread_mutex_unlock(&g_socketListMtx);
+    
+    pthread_mutex_unlock(&g_socketInitMtx);
+
+    log_msg("[Lib] Initializing RGCP Socket [%d] @ %p\n", pSocket->m_RGCPSocketFd, (void*)pSocket);
 
     return 0;
 }
@@ -148,6 +174,7 @@ void rgcp_socket_free(rgcp_socket_t* pSocket)
     
     pSocket->m_helperThreadInfo.m_bShutdownFlag = 1;
 
+    pthread_mutex_destroy(&pSocket->m_socketMtx);
     pthread_mutex_destroy(&pSocket->m_helperThreadInfo.m_communicationMtx);
     pthread_cond_destroy(&pSocket->m_helperThreadInfo.m_bMiddlewareHasDataCond);
     pthread_join(pSocket->m_helperThreadInfo.m_communicationThreadHandle, NULL);
@@ -202,8 +229,29 @@ void* rgcp_socket_helper_thread(void* pSocketInfo)
     remoteFd.events = POLLIN | POLLRDHUP;
     remoteFd.revents = 0;
 
+    time_t lastHeartbeatTime = 0, currTime = time(NULL);
     while(pSocket->m_helperThreadInfo.m_bShutdownFlag == 0)
     {
+        currTime = time(NULL);
+        assert(currTime >= lastHeartbeatTime);
+        time_t timeDeltaSeconds = currTime - lastHeartbeatTime;
+
+        if (timeDeltaSeconds >= pSocket->m_heartbeatPeriod)
+        {
+            struct rgcp_packet *pHeartbeatPacket = NULL;
+            if (rgcp_packet_init(&pHeartbeatPacket, 0) < 0)
+                continue;
+
+            if (rgcp_api_send(pSocket->m_middlewareFd, pHeartbeatPacket) < 0)
+            {
+                // FIXME: socket in error state
+            }
+
+            rgcp_packet_free(pHeartbeatPacket);
+
+            lastHeartbeatTime = currTime;
+        }
+
         if (poll(&remoteFd, 1, 0) < 0)
         {
             // FIXME: socket in error state

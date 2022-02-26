@@ -5,17 +5,13 @@
 #include <string.h>
 #include <rgcp/rgcp.h>
 
+#include <pthread.h>
+
 #include "ErrorReport.h"
 
-void _print_groups(rgcp_group_info_t **ppGroupInfo, ssize_t groupCount)
-{
-    for (ssize_t i = 0; i < groupCount; i++)
-    {
-        printf("[Group #%ld] 0x%x %s\n", i + 1, ppGroupInfo[i]->m_groupNameHash, ppGroupInfo[i]->m_pGroupName);
-    }
-}
+#define GROUP_NAME "MULTI_CLIENT_TEST"
 
-int main()
+void* test_thread(__attribute__((unused)) void *args)
 {
     struct sockaddr_in mwAddr;
     mwAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
@@ -30,41 +26,21 @@ int main()
     rgcp_group_info_t** ppGroups = NULL;
     ssize_t groupCount = rgcp_discover_groups(fd, &ppGroups);
 
-    _print_groups(ppGroups, groupCount);
-
     if (groupCount < 0)
     {
         rgcp_close(fd);
-        ErrorReport("Group Discover 1 Failed");
+        ErrorReport("Group Discover Failed");
     }
-
-    const char* groupname = "API_TEST";
-    if (rgcp_create_group(fd, groupname, strlen(groupname)) < 0)
-    {
-        rgcp_close(fd);
-        ErrorReport("Group Creation Failed");
-    }
-
-    rgcp_free_group_infos(&ppGroups, groupCount);
-    ppGroups = NULL;
-    groupCount = rgcp_discover_groups(fd, &ppGroups);
-
-    if (groupCount < 0)
-        ErrorReport("Group Discover 2 Failed");
-
-    _print_groups(ppGroups, groupCount);
 
     rgcp_group_info_t *pTargetGroup = NULL;
     uint32_t maxHash = 0;
     for (ssize_t i = 0; i < groupCount; i++)
     {
-        if (strcmp(ppGroups[i]->m_pGroupName, groupname) == 0 && ppGroups[i]->m_groupNameHash > maxHash)
+        if (strcmp(ppGroups[i]->m_pGroupName, GROUP_NAME) == 0 && ppGroups[i]->m_groupNameHash > maxHash)
         {
             pTargetGroup = ppGroups[i];
         }
     }
-
-    printf("Connecting to group [%s, 0x%x]\n", pTargetGroup->m_pGroupName, pTargetGroup->m_groupNameHash);
 
     if (rgcp_connect(fd, *pTargetGroup) < 0)
     {
@@ -72,6 +48,8 @@ int main()
         rgcp_close(fd);
         ErrorReport("Group Connect Failed");
     }
+
+    sleep(30);
     
     if (rgcp_disconnect(fd) < 0)
     {
@@ -81,6 +59,36 @@ int main()
     }
 
     rgcp_free_group_infos(&ppGroups, groupCount);
+    rgcp_close(fd);
+
+    return NULL;
+}
+
+int main()
+{
+    struct sockaddr_in mwAddr;
+    mwAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    mwAddr.sin_port = htons(8000);
+    mwAddr.sin_family = AF_INET;
+
+    int fd = rgcp_socket(AF_INET, (struct sockaddr*)&mwAddr, sizeof(mwAddr));
+
+    if (fd < 0)
+        ErrorReport("Socket init failed");
+
+    if (rgcp_create_group(fd, GROUP_NAME, strlen(GROUP_NAME)) < 0)
+    {
+        rgcp_close(fd);
+        ErrorReport("Group creation failed");
+    }
+
+    pthread_t helper_threads[3];
+    for (int i = 0; i < 3; i++)
+        pthread_create(&helper_threads[i], NULL, test_thread, NULL);
+
+    for (int i = 0; i < 3; i++)
+        pthread_join(helper_threads[i], NULL);
+
     rgcp_close(fd);
 
     return 0;

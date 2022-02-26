@@ -23,9 +23,10 @@ enum RGCP_PACKET_TYPE
 
 enum RGCP_PACKET_ERROR
 {
-    RGCP_ERROR_NO_ERROR           = 0,
-    RGCP_ERROR_NO_SUCH_GROUP      = 1,
-    RGCP_ERROR_ALREADY_IN_GROUP   = 2
+    RGCP_ERROR_NO_ERROR             = 0,
+    RGCP_ERROR_NO_SUCH_GROUP        = 1,
+    RGCP_ERROR_ALREADY_IN_GROUP     = 2,
+    RGCP_ERROR_SHARING_ERROR        = 4
 };
 
 struct rgcp_packet

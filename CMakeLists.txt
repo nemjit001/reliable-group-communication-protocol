@@ -53,5 +53,23 @@ add_executable(StartupShutdown
 )
 target_link_libraries(StartupShutdown dl rgcp)
 
+add_executable(MultiClient
+    test/MultiClient.c
+)
+target_link_libraries(MultiClient dl rgcp)
+
+add_executable(MultiGroup
+    test/MultiGroup.c
+)
+target_link_libraries(MultiGroup dl rgcp)
+
+add_executable(LivenessCheck
+    test/LivenessCheck.c
+)
+target_link_libraries(LivenessCheck dl rgcp)
+
 add_test(NAME "StartupShutdown" COMMAND StartupShutdown)
 add_test(NAME "API" COMMAND ApiTest)
+add_test(NAME "MultiGroup" COMMAND MultiGroup)
+add_test(NAME "MultiClient" COMMAND MultiClient)
+add_test(NAME "LivenessCheck" COMMAND LivenessCheck)

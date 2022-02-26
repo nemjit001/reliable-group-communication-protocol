@@ -42,7 +42,7 @@ int rgcp_free_group_infos(rgcp_group_info_t*** ppp_group_infos, ssize_t group_co
 
 int rgcp_create_group(int sockfd, const char* groupname, size_t namelen);
 
-int rgcp_connect(int sockfd, rgcp_group_info_t group);
+int rgcp_connect(int sockfd, rgcp_group_info_t group_info);
 
 int rgcp_disconnect(int sockfd);
 

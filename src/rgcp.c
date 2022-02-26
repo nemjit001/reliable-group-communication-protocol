@@ -78,15 +78,19 @@ int rgcp_socket(int domain, struct sockaddr* middlewareaddr, socklen_t addrlen)
     }
 
     rgcp_socket_t* pSocket = calloc(sizeof(rgcp_socket_t), 1);
-    if (rgcp_socket_init(pSocket, middlewareFd, domain) < 0)
+    if (rgcp_socket_init(pSocket, middlewareFd, domain, RGCP_SOCKET_HEARTBEAT_PERIOD_SECONDS) < 0)
         return -1;
+
+    pthread_mutex_lock(&pSocket->m_socketMtx);
 
     if (_share_host_info(pSocket->m_middlewareFd, pSocket->m_listenSocketInfo.m_hostAdress, pSocket->m_listenSocketInfo.m_hostAdressLength) < 0)
     {
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
         rgcp_socket_free(pSocket);
         return -1;
     }
 
+    pthread_mutex_unlock(&pSocket->m_socketMtx);
     return pSocket->m_RGCPSocketFd;
 }
 
@@ -99,6 +103,8 @@ int rgcp_close(int sockfd)
         errno = ENOTSOCK;
         return -1;
     }
+
+    pthread_mutex_lock(&pSocket->m_socketMtx);
 
     if (pSocket->m_middlewareFd < 0)
         goto end;
@@ -137,6 +143,7 @@ int rgcp_close(int sockfd)
     log_msg("[Lib] Socket Disconnect Done\n");
     
 end:
+    pthread_mutex_unlock(&pSocket->m_socketMtx);
     rgcp_socket_free(pSocket);
     free(pSocket);
     return 0;
@@ -144,6 +151,7 @@ end:
 error:
     log_msg("[Lib] Disconnect Error, cleaning up anyway\n");
 
+    pthread_mutex_unlock(&pSocket->m_socketMtx);
     rgcp_socket_free(pSocket);
     free(pSocket);
     return -1;
@@ -151,6 +159,10 @@ error:
 
 ssize_t rgcp_discover_groups(int sockfd, rgcp_group_info_t*** ppp_group_infos)
 {
+    if (ppp_group_infos == NULL)
+        return -1;
+    
+    (*ppp_group_infos) = NULL;
     rgcp_socket_t* pSocket = NULL;
 
     if (rgcp_socket_get(sockfd, &pSocket) < 0)
@@ -158,6 +170,8 @@ ssize_t rgcp_discover_groups(int sockfd, rgcp_group_info_t*** ppp_group_infos)
         errno = ENOTSOCK;
         return -1;
     }
+
+    pthread_mutex_lock(&pSocket->m_socketMtx);
 
     struct rgcp_packet* pPacket;
     rgcp_packet_init(&pPacket, 0);
@@ -169,6 +183,7 @@ ssize_t rgcp_discover_groups(int sockfd, rgcp_group_info_t*** ppp_group_infos)
     if (rgcp_api_send(pSocket->m_middlewareFd, pPacket) < 0)
     {
         rgcp_packet_free(pPacket);
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
         return -1;
     }
 
@@ -177,19 +192,24 @@ ssize_t rgcp_discover_groups(int sockfd, rgcp_group_info_t*** ppp_group_infos)
     pPacket = NULL;
 
     if (rgcp_helper_recv(pSocket, &pPacket, RGCP_SOCKET_TIMEOUT_MS) < 0)
+    {
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
         return -1;
+    }
 
     log_msg("[Lib][%p] Received Discover Response\n", pSocket);
     
     if (pPacket->m_packetType != RGCP_TYPE_GROUP_DISCOVER_RESPONSE || pPacket->m_packetError != RGCP_ERROR_NO_ERROR)
     { 
         rgcp_packet_free(pPacket);
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
         return -1;
     }
 
     if (pPacket->m_dataLen == 0)
     {
         rgcp_packet_free(pPacket);
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
         return 0;
     }
 
@@ -208,6 +228,7 @@ ssize_t rgcp_discover_groups(int sockfd, rgcp_group_info_t*** ppp_group_infos)
         {
             log_msg("[Lib] Group Info deserialization failed\n");
             rgcp_packet_free(pPacket);
+            pthread_mutex_unlock(&pSocket->m_socketMtx);
             return -1;
         }
 
@@ -221,6 +242,7 @@ ssize_t rgcp_discover_groups(int sockfd, rgcp_group_info_t*** ppp_group_infos)
     }
 
     rgcp_packet_free(pPacket);
+    pthread_mutex_unlock(&pSocket->m_socketMtx);
     return groupInfoCount;
 }
 
@@ -228,7 +250,7 @@ int rgcp_free_group_infos(rgcp_group_info_t*** ppp_group_infos, ssize_t group_co
 {
     assert(ppp_group_infos);
 
-    if (group_count < 0)
+    if (group_count < 0 || ppp_group_infos == NULL)
         return -1;
 
     for (ssize_t i = 0; i < group_count; i++)
@@ -246,6 +268,9 @@ int rgcp_free_group_infos(rgcp_group_info_t*** ppp_group_infos, ssize_t group_co
 int rgcp_create_group(int sockfd, const char* groupname, size_t namelen)
 {
     assert(groupname);
+    if (groupname == NULL)
+        return -1;
+
     rgcp_socket_t* pSocket = NULL;
 
     if (rgcp_socket_get(sockfd, &pSocket) < 0)
@@ -254,9 +279,14 @@ int rgcp_create_group(int sockfd, const char* groupname, size_t namelen)
         return -1;
     }
 
+    pthread_mutex_lock(&pSocket->m_socketMtx);
+
     assert(strlen(groupname) == namelen);
     if (strlen(groupname) != namelen)
+    {
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
         return -1;
+    }
 
     struct rgcp_packet* pPacket;
     rgcp_packet_init(&pPacket, namelen + 1);
@@ -269,6 +299,7 @@ int rgcp_create_group(int sockfd, const char* groupname, size_t namelen)
     if (rgcp_api_send(pSocket->m_middlewareFd, pPacket) < 0)
     {
         rgcp_packet_free(pPacket);
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
         return -1;
     }
 
@@ -277,21 +308,26 @@ int rgcp_create_group(int sockfd, const char* groupname, size_t namelen)
     pPacket = NULL;
 
     if (rgcp_helper_recv(pSocket, &pPacket, RGCP_SOCKET_TIMEOUT_MS) < 0)
+    {
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
         return -1;
+    }
 
     log_msg("[Lib][%p] Create Group Response\n", pSocket);
     
     if (pPacket->m_packetType != RGCP_TYPE_GROUP_CREATE_RESPONSE || pPacket->m_packetError != RGCP_ERROR_NO_ERROR)
     { 
         rgcp_packet_free(pPacket);
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
         return -1;
     }
 
     rgcp_packet_free(pPacket);
+    pthread_mutex_unlock(&pSocket->m_socketMtx);
     return 0;
 }
 
-int rgcp_connect(int sockfd, rgcp_group_info_t group)
+int rgcp_connect(int sockfd, rgcp_group_info_t group_info)
 {
     rgcp_socket_t* pSocket = NULL;
 
@@ -301,13 +337,16 @@ int rgcp_connect(int sockfd, rgcp_group_info_t group)
         return -1;
     }
 
-    rgcp_group_t rgcpGroup = rgcp_group_from_info(group);
+    pthread_mutex_lock(&pSocket->m_socketMtx);
+
     uint8_t* pDataBuff = NULL;
-    ssize_t bufferSize = serialize_rgcp_group(&rgcpGroup, &pDataBuff);
-    rgcp_group_free(rgcpGroup);
+    ssize_t bufferSize = serialize_rgcp_group_name_info(group_info, &pDataBuff);
 
     if (bufferSize < 0)
+    {
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
         return -1;
+    }
 
     struct rgcp_packet* pPacket;
     rgcp_packet_init(&pPacket, bufferSize);
@@ -320,6 +359,7 @@ int rgcp_connect(int sockfd, rgcp_group_info_t group)
     {
         rgcp_packet_free(pPacket);
         free(pDataBuff);
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
         return -1;
     }
 
@@ -329,14 +369,37 @@ int rgcp_connect(int sockfd, rgcp_group_info_t group)
     pPacket = NULL;
 
     if (rgcp_helper_recv(pSocket, &pPacket, RGCP_SOCKET_TIMEOUT_MS) < 0)
+    {
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
         return -1;
+    }
 
     log_msg("[Lib][%p] Received Group Join Response\n", pSocket);
-    
-    // TODO: handle response
 
+    assert(pPacket->m_packetType == RGCP_TYPE_GROUP_JOIN_RESPONSE);
+
+    if (pPacket->m_packetError != RGCP_ERROR_NO_ERROR)
+    {
+        log_msg("[Lib][%p] Received error on join: %d\n", pSocket, pPacket->m_packetError);
+        rgcp_packet_free(pPacket);
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
+        return -1;
+    }
+    
+    rgcp_group_t group;
+    if (deserialize_rgcp_group(&group, pPacket->m_data, pPacket->m_dataLen) < 0)
+    {
+        rgcp_packet_free(pPacket);
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
+        return -1;
+    }
+
+    // TODO: handle response, connect to all clients in group
+
+    rgcp_group_free(group);
     rgcp_packet_free(pPacket);
-    return -1;
+    pthread_mutex_unlock(&pSocket->m_socketMtx);
+    return 0;
 }
 
 int rgcp_disconnect(int sockfd)

@@ -24,6 +24,9 @@ typedef struct _rgcp_socket_t
     struct list_entry m_listEntry;
     int m_RGCPSocketFd;
     int m_middlewareFd;
+    // TODO: fix this -> int m_bErrorState;
+    time_t m_heartbeatPeriod;
+    pthread_mutex_t m_socketMtx;
 
     struct
     {
@@ -52,7 +55,7 @@ typedef struct _rgcp_socket_t
     struct _rgcp_socket_t* m_pSelf;
 } rgcp_socket_t;
 
-int rgcp_socket_init(rgcp_socket_t* pSocket, int middlewareFd, int domain);
+int rgcp_socket_init(rgcp_socket_t* pSocket, int middlewareFd, int domain, time_t heartbeatPeriodSeconds);
 
 void rgcp_socket_free(rgcp_socket_t* pSocket);
 
