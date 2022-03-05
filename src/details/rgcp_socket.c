@@ -1,7 +1,7 @@
 #include "rgcp_socket.h"
 
 #include "logger.h"
-#include "crc32.h"
+#include "rgcp_crc32.h"
 
 #include <assert.h>
 #include <unistd.h>
@@ -58,6 +58,24 @@ int _create_listen_socket(int domain, struct sockaddr_in* addrinfo, socklen_t *a
     return fd;
 }
 
+int _send_heartbeat(rgcp_socket_t* pSocket)
+{
+    struct rgcp_packet *pHeartbeatPacket = NULL;
+    if (rgcp_packet_init(&pHeartbeatPacket, 0) < 0)
+    {
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
+        return -1;
+    }
+
+    if (rgcp_api_send(pSocket->m_middlewareFd, &pSocket->m_apiMtxes.m_sendMtx, pHeartbeatPacket) < 0)
+    {
+        // FIXME: socket in error state
+    }
+
+    rgcp_packet_free(pHeartbeatPacket);
+    return 0;
+}
+
 int rgcp_socket_init(rgcp_socket_t* pSocket, int middlewareFd, int domain, time_t heartbeatPeriodSeconds)
 {
     assert(pSocket);
@@ -84,6 +102,18 @@ int rgcp_socket_init(rgcp_socket_t* pSocket, int middlewareFd, int domain, time_
         &pSocket->m_listenSocketInfo.m_hostAdressLength
     );
 
+    pSocket->m_peerData.m_bConnectedToGroup = 0;
+    pSocket->m_pSelf = pSocket;
+    pSocket->m_helperThreadInfo.m_bShutdownFlag = 0;
+    pSocket->m_helperThreadInfo.m_bMiddlewareHasData = 0;
+    list_init(&pSocket->m_peerData.m_connectedPeers);
+
+    if (pSocket->m_listenSocketInfo.m_listenSocket < 0)
+    {
+        pthread_mutex_unlock(&g_socketInitMtx);
+        return -1;
+    }
+
     if (pthread_mutex_init(&pSocket->m_socketMtx, NULL) < 0)
     {
         close(pSocket->m_listenSocketInfo.m_listenSocket);
@@ -91,11 +121,19 @@ int rgcp_socket_init(rgcp_socket_t* pSocket, int middlewareFd, int domain, time_
         return -1;
     }
 
-    pSocket->m_pSelf = pSocket;
-    pSocket->m_helperThreadInfo.m_bShutdownFlag = 0;
-    pSocket->m_helperThreadInfo.m_bMiddlewareHasData = 0;
+    if (pthread_mutex_init(&pSocket->m_apiMtxes.m_sendMtx, NULL) < 0)
+    {
+        close(pSocket->m_listenSocketInfo.m_listenSocket);
+        pthread_mutex_unlock(&g_socketInitMtx);
+        return -1;
+    }
 
-    list_init(&(pSocket->m_peerData.m_connectedPeers));
+    if (pthread_mutex_init(&pSocket->m_apiMtxes.m_recvMtx, NULL) < 0)
+    {
+        close(pSocket->m_listenSocketInfo.m_listenSocket);
+        pthread_mutex_unlock(&g_socketInitMtx);
+        return -1;
+    }
 
     if (pSocket->m_listenSocketInfo.m_listenSocket < 0)
     {
@@ -188,6 +226,16 @@ void rgcp_socket_free(rgcp_socket_t* pSocket)
     close(pSocket->m_middlewareFd);
 
     close(pSocket->m_listenSocketInfo.m_listenSocket);
+
+    struct list_entry *pCurr, *pNext;
+    LIST_FOR_EACH(pCurr, pNext, &pSocket->m_peerData.m_connectedPeers)
+    {
+        struct _rgcp_peer_connection *pCurrPeer = LIST_ENTRY(pCurr, struct _rgcp_peer_connection, m_listEntry);
+        if (pCurrPeer->m_remoteFd > 0)
+            close(pCurrPeer->m_remoteFd);
+        
+        free(pCurrPeer);
+    }
     
     pthread_mutex_lock(&g_socketListMtx);
     list_del(&pSocket->m_listEntry);
@@ -216,6 +264,31 @@ int rgcp_socket_get(int sockfd, rgcp_socket_t** ppSocket)
     return -1;
 }
 
+int rgcp_socket_connect_to_peer(rgcp_socket_t* pSocket, struct _rgcp_peer_info peerInfo)
+{
+    log_msg("[Lib][%d] Connecting to peer socket\n", pSocket->m_RGCPSocketFd);
+
+    pthread_mutex_lock(&pSocket->m_peerData.m_peerMtx);
+
+    struct _rgcp_peer_connection * pConnection = calloc(1, sizeof(struct _rgcp_peer_connection));
+    pConnection->m_peerInfo = peerInfo;
+    pConnection->m_remoteFd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    pConnection->m_bEstablished = 0;
+
+    if (connect(pConnection->m_remoteFd, (struct sockaddr*)&peerInfo.m_addressInfo, peerInfo.m_addressLength) < 0)
+    {
+        close(pConnection->m_remoteFd);
+        pthread_mutex_unlock(&pSocket->m_peerData.m_peerMtx);
+        return -1;
+    }
+
+    pConnection->m_bEstablished = 1;
+
+    list_add_tail(&pConnection->m_listEntry, &pSocket->m_peerData.m_connectedPeers);
+    pthread_mutex_unlock(&pSocket->m_peerData.m_peerMtx);
+    return 0;
+}
+
 void* rgcp_socket_helper_thread(void* pSocketInfo)
 {
     rgcp_socket_t* pSocket = (rgcp_socket_t*)pSocketInfo;
@@ -225,10 +298,6 @@ void* rgcp_socket_helper_thread(void* pSocketInfo)
         return NULL;
 
     struct pollfd remoteFd;
-    remoteFd.fd = pSocket->m_middlewareFd;
-    remoteFd.events = POLLIN | POLLRDHUP;
-    remoteFd.revents = 0;
-
     time_t lastHeartbeatTime = 0, currTime = time(NULL);
     while(pSocket->m_helperThreadInfo.m_bShutdownFlag == 0)
     {
@@ -238,19 +307,17 @@ void* rgcp_socket_helper_thread(void* pSocketInfo)
 
         if (timeDeltaSeconds >= pSocket->m_heartbeatPeriod)
         {
-            struct rgcp_packet *pHeartbeatPacket = NULL;
-            if (rgcp_packet_init(&pHeartbeatPacket, 0) < 0)
+            if (_send_heartbeat(pSocket) < 0)
                 continue;
-
-            if (rgcp_api_send(pSocket->m_middlewareFd, pHeartbeatPacket) < 0)
-            {
-                // FIXME: socket in error state
-            }
-
-            rgcp_packet_free(pHeartbeatPacket);
 
             lastHeartbeatTime = currTime;
         }
+
+        memset(&remoteFd, 0, sizeof(struct pollfd));
+
+        remoteFd.fd = pSocket->m_middlewareFd;
+        remoteFd.events = POLLIN | POLLRDHUP;
+        remoteFd.revents = 0;
 
         if (poll(&remoteFd, 1, 0) < 0)
         {
@@ -261,23 +328,23 @@ void* rgcp_socket_helper_thread(void* pSocketInfo)
         {
             // socket in invalid state
 
-            log_msg("[Lib][%p] Middleware closed connection\n", (void*)pSocket);
+            log_msg("[Lib][%d] Middleware closed connection\n", pSocket->m_RGCPSocketFd);
             pSocket->m_helperThreadInfo.m_bShutdownFlag = 1;
             return NULL;
         }
         else if (remoteFd.revents & POLLIN)
         {
             struct rgcp_packet* pPacket = NULL;
-            ssize_t bytesReceived = rgcp_api_recv(pSocket->m_middlewareFd, &pPacket);
+            ssize_t bytesReceived = rgcp_api_recv(pSocket->m_middlewareFd, &pSocket->m_apiMtxes.m_recvMtx, &pPacket);
 
             if (bytesReceived <= 0)
             {
                 // FIXME: socket in error state, do error handling
-                log_msg("[Lib][%p] Error in API receive (received %d bytes, packet ptr is \"%p\")\n", (void*)pSocket, bytesReceived, (void*)pPacket);
+                log_msg("[Lib][%d] Error in API receive (received %d bytes, packet ptr is \"%p\")\n", pSocket->m_RGCPSocketFd, bytesReceived, (void*)pPacket);
                 return NULL;
             }
 
-            log_msg("[Lib][%p] Received Middleware Packet (%d, %d, %u)\n", (void*)pSocket, pPacket->m_packetType, pPacket->m_packetError, pPacket->m_dataLen);
+            log_msg("[Lib][%d] Received Middleware Packet (%d, %d, %u)\n", pSocket->m_RGCPSocketFd, pPacket->m_packetType, pPacket->m_packetError, pPacket->m_dataLen);
 
             if (rgcp_should_handle_as_helper(pPacket->m_packetType))
             {
@@ -320,19 +387,26 @@ int rgcp_should_handle_as_helper(enum RGCP_PACKET_TYPE packetType)
 
 int rgcp_helper_handle_packet(rgcp_socket_t* pSocket, struct rgcp_packet* pPacket)
 {
-    // TODO: handle packet
     switch (pPacket->m_packetType)
     {
     case RGCP_TYPE_PEER_SHARE:
         {
-            // TODO: deserialize packet data and add peer
-            // rgcp_socket_add_peer(peerInfo);
+            struct _rgcp_peer_info info;
+            if (deserialize_rgcp_peer_info(&info, pPacket->m_data, pPacket->m_dataLen) < 0)
+                return -1;
+
+            if (rgcp_add_peer(pSocket, info) < 0)
+                return -1;
         }
         break;
     case RGCP_TYPE_PEER_REMOVE:
         {
-            // TODO: deserialize packet data and remove peer
-            // rgcp_socket_remove_peer(peerInfo);
+            struct _rgcp_peer_info info;
+            if (deserialize_rgcp_peer_info(&info, pPacket->m_data, pPacket->m_dataLen) < 0)
+                return -1;
+
+            if (rgcp_remove_peer(pSocket, info) < 0)
+                return -1;
         }
         break;
     case RGCP_TYPE_SOCKET_DISCONNECT_RESPONSE:
@@ -346,6 +420,63 @@ int rgcp_helper_handle_packet(rgcp_socket_t* pSocket, struct rgcp_packet* pPacke
         break;
     }
 
+    return 0;
+}
+
+int rgcp_add_peer(rgcp_socket_t *pSocket, struct _rgcp_peer_info peerInfo)
+{
+    pthread_mutex_lock(&pSocket->m_peerData.m_peerMtx);
+
+    struct _rgcp_peer_connection *pConnection = calloc(1, sizeof(struct _rgcp_peer_connection));
+
+    struct sockaddr_in peerAddr;
+    socklen_t addrlen = sizeof(peerAddr);
+    int peerFd = accept(pSocket->m_listenSocketInfo.m_listenSocket, (struct sockaddr*)&peerAddr, &addrlen);
+
+    char* peerIpAddr = inet_ntoa(peerInfo.m_addressInfo.sin_addr);
+
+    pConnection->m_peerInfo = peerInfo;
+    pConnection->m_remoteFd = -1;
+    pConnection->m_bEstablished = 0;
+
+    if (peerInfo.m_addressInfo.sin_addr.s_addr != peerAddr.sin_addr.s_addr)
+    {
+        log_msg("[Lib][%d] Unexpected address for peer (expected %lu, was %lu)\n", pSocket->m_RGCPSocketFd, peerInfo.m_addressInfo.sin_addr.s_addr, peerAddr.sin_addr.s_addr);
+        return -1;
+    }
+
+    pConnection->m_bEstablished = 1;
+    pConnection->m_remoteFd = peerFd;
+
+    list_add_tail(&pConnection->m_listEntry, &pSocket->m_peerData.m_connectedPeers);
+
+    log_msg("[Lib][Peer][%d] Added peer (%s:%u)\n", pSocket->m_RGCPSocketFd, peerIpAddr, peerInfo.m_addressInfo.sin_port);
+    pthread_mutex_unlock(&pSocket->m_peerData.m_peerMtx);
+    return 0;
+}
+
+int rgcp_remove_peer(rgcp_socket_t *pSocket, struct _rgcp_peer_info peerInfo)
+{
+    pthread_mutex_lock(&pSocket->m_peerData.m_peerMtx);
+
+    struct list_entry *pCurr, *pNext;
+    LIST_FOR_EACH(pCurr, pNext, &pSocket->m_peerData.m_connectedPeers)
+    {
+        struct _rgcp_peer_connection *pConnection = LIST_ENTRY(pCurr, struct _rgcp_peer_connection, m_listEntry);
+        char* peerIpAddr = inet_ntoa(pConnection->m_peerInfo.m_addressInfo.sin_addr);
+
+        if (pConnection->m_peerInfo.m_addressInfo.sin_addr.s_addr == peerInfo.m_addressInfo.sin_addr.s_addr && pConnection->m_peerInfo.m_addressInfo.sin_port == peerInfo.m_addressInfo.sin_port)
+        {
+            log_msg("[Lib][Peer][%d] Removed peer (%s:%u)\n", pSocket->m_RGCPSocketFd, peerIpAddr, pConnection->m_peerInfo.m_addressInfo.sin_port);
+
+            list_del(pCurr);
+            close(pConnection->m_remoteFd);
+            free(pConnection);
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&pSocket->m_peerData.m_peerMtx);
     return 0;
 }
 
@@ -401,7 +532,7 @@ int rgcp_helper_recv(rgcp_socket_t* pSocket, struct rgcp_packet** ppPacket, time
 
     uint32_t receivedPacketHash = (*ppPacket)->m_packetHash;
     (*ppPacket)->m_packetHash = 0;
-    uint32_t actualPacketHash = CRC32_STR_DYNAMIC((char*)(*ppPacket), ptrSize);
+    uint32_t actualPacketHash = RGCP_CRC32_DYNAMIC((uint8_t*)(*ppPacket), ptrSize);
 
     assert(actualPacketHash == receivedPacketHash);
     if (actualPacketHash != receivedPacketHash)
@@ -436,7 +567,7 @@ int rgcp_helper_send(rgcp_socket_t* pSocket, struct rgcp_packet* pPacket)
         return -1;
 
     pPacket->m_packetHash = 0;
-    pPacket->m_packetHash = CRC32_STR_DYNAMIC((char*)pPacket, ptrSize);
+    pPacket->m_packetHash = RGCP_CRC32_DYNAMIC((uint8_t*)pPacket, ptrSize);
     memcpy(pBuffer, pPacket, ptrSize);
 
     if (write(pSocket->m_helperThreadInfo.m_helperThreadPipe[1], &ptrSize, sizeof(uint32_t)) < 0)

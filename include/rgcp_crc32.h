@@ -1,8 +1,7 @@
-#ifndef CRC32
-#define CRC32
+#ifndef RGCP_CRC32
+#define RGCP_CRC32
 
 #include <stdint.h>
-#include <stdio.h>
 
 static const uint32_t table[256] =
 {
@@ -60,19 +59,19 @@ static const uint32_t table[256] =
     0x2D02EF8DU
 };
 
-static uint32_t _compute(const char* data, uint32_t len, uint32_t crc)
+static uint32_t _crc32_compute(const uint8_t* data, uint32_t len, uint32_t crc)
 {
     crc = crc ^ 0xFFFFFFFFU;
     for (uint32_t i = 0; i < len; i++)
     {
-        const char* ptr = (data + i);
+        const uint8_t* ptr = (data + i);
         crc = table[((*ptr) & 0xFF) ^ (crc & 0xFF)] ^ (crc >> 8);
     }
     crc = crc ^ 0xFFFFFFFFU;
     return crc;
 }
 
-#define CRC32_STR_STATIC(str)           ((uint32_t)(_compute(str, sizeof(str) - 1, 0)))
-#define CRC32_STR_DYNAMIC(str,strlen)   ((uint32_t)(_compute(str, strlen, 0)))
+#define RGCP_CRC32_STATIC(ptr)           ((uint32_t)(_crc32_compute(ptr, sizeof(ptr) - 1, 0)))
+#define RGCP_CRC32_DYNAMIC(ptr, ptrsize)   ((uint32_t)(_crc32_compute(ptr, ptrsize, 0)))
 
 #endif

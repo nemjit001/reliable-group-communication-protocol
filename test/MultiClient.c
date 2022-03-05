@@ -11,8 +11,10 @@
 
 #define GROUP_NAME "MULTI_CLIENT_TEST"
 
-void* test_thread(__attribute__((unused)) void *args)
+void* test_thread(void *args)
 {
+    int *threadCount = (int*)args;
+
     struct sockaddr_in mwAddr;
     mwAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
     mwAddr.sin_port = htons(8000);
@@ -49,22 +51,32 @@ void* test_thread(__attribute__((unused)) void *args)
         ErrorReport("Group Connect Failed");
     }
 
-    sleep(30);
+    rgcp_free_group_infos(&ppGroups, groupCount);
+
+    sleep(*threadCount);
+
+    ssize_t peerCount = rgcp_peer_count(fd);
+    printf("[%lu] connected to %ld peers\n", pthread_self(), peerCount);
+    if (peerCount != (*threadCount) - 1)
+    {
+        rgcp_close(fd);
+        ErrorReport("Peer Count != ThreadCount - 1");
+    }
+
+    sleep(*threadCount);
     
     if (rgcp_disconnect(fd) < 0)
     {
-        rgcp_free_group_infos(&ppGroups, groupCount);
         rgcp_close(fd);
         ErrorReport("Group Disconnect Failed");
     }
 
-    rgcp_free_group_infos(&ppGroups, groupCount);
     rgcp_close(fd);
 
     return NULL;
 }
 
-int main()
+int main(int argc, char** argv)
 {
     struct sockaddr_in mwAddr;
     mwAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
@@ -82,11 +94,15 @@ int main()
         ErrorReport("Group creation failed");
     }
 
-    pthread_t helper_threads[3];
-    for (int i = 0; i < 3; i++)
-        pthread_create(&helper_threads[i], NULL, test_thread, NULL);
+    int threadCount = 3;
+    if (argc == 2)
+        threadCount = atoi(argv[1]);
 
-    for (int i = 0; i < 3; i++)
+    pthread_t helper_threads[threadCount];
+    for (int i = 0; i < threadCount; i++)
+        pthread_create(&helper_threads[i], NULL, test_thread, &threadCount);
+
+    for (int i = 0; i < threadCount; i++)
         pthread_join(helper_threads[i], NULL);
 
     rgcp_close(fd);

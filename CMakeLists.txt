@@ -29,7 +29,7 @@ target_link_libraries(${TARGET_NAME} dl)
 set_target_properties(${TARGET_NAME} PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION 1
-    PUBLIC_HEADER "include/rgcp.h;include/rgcp_api.h;include/rgcp_group.h;include/rgcp_peer.h"
+    PUBLIC_HEADER "include/rgcp.h;include/rgcp_api.h;include/rgcp_group.h;include/rgcp_peer.h;include/rgcp_crc32.h"
 )
 
 target_include_directories(${TARGET_NAME} PRIVATE src)
@@ -68,8 +68,21 @@ add_executable(LivenessCheck
 )
 target_link_libraries(LivenessCheck dl rgcp)
 
+add_executable(ClientSimCrash
+    test/ClientSimCrash.c
+)
+target_link_libraries(ClientSimCrash dl rgcp)
+
+add_executable(DataTransfer
+    test/DataTransfer.c
+)
+target_link_libraries(DataTransfer dl rgcp)
+
 add_test(NAME "StartupShutdown" COMMAND StartupShutdown)
 add_test(NAME "API" COMMAND ApiTest)
 add_test(NAME "MultiGroup" COMMAND MultiGroup)
 add_test(NAME "MultiClient" COMMAND MultiClient)
 add_test(NAME "LivenessCheck" COMMAND LivenessCheck)
+add_test(NAME "ClientSimCrash" COMMAND ClientSimCrash)
+add_test(NAME "DataTransfer" COMMAND DataTransfer)
+add_test(NAME "MultiClientLarge" COMMAND MultiClient 10)

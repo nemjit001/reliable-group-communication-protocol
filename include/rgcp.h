@@ -44,10 +44,14 @@ int rgcp_create_group(int sockfd, const char* groupname, size_t namelen);
 
 int rgcp_connect(int sockfd, rgcp_group_info_t group_info);
 
+ssize_t rgcp_peer_count(int sockfd);
+
 int rgcp_disconnect(int sockfd);
 
 ssize_t rgcp_send(int sockfd, const char* buf, size_t len, enum RGCP_SEND_FLAGS flags);
 
 ssize_t rgcp_recv(int sockfd, rgcp_recv_data_t** pp_recvdatalist);
+
+void rgcp_free_recv_data(rgcp_recv_data_t* p_recvdatalist, ssize_t data_count);
 
 #endif // RGCP_H

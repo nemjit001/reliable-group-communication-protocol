@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <unistd.h>
 
+#include <pthread.h>
+
 enum RGCP_PACKET_TYPE
 {
     RGCP_TYPE_HEARTBEAT_NOTIFY,
@@ -42,8 +44,8 @@ int rgcp_packet_init(struct rgcp_packet** ppPacket, size_t dataLen);
 
 void rgcp_packet_free(struct rgcp_packet* pPacket);
 
-ssize_t rgcp_api_recv(int fd, struct rgcp_packet** ppPacket);
+ssize_t rgcp_api_recv(int fd, pthread_mutex_t* pMtx, struct rgcp_packet** ppPacket);
 
-ssize_t rgcp_api_send(int fd, struct rgcp_packet* pPacket);
+ssize_t rgcp_api_send(int fd, pthread_mutex_t* pMtx, struct rgcp_packet* pPacket);
 
 #endif
