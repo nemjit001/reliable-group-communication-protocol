@@ -78,6 +78,11 @@ add_executable(DataTransfer
 )
 target_link_libraries(DataTransfer dl rgcp)
 
+add_executable(ThreadSafety
+    test/ThreadSafety.c
+)
+target_link_libraries(ThreadSafety dl rgcp)
+
 add_test(NAME "StartupShutdown" COMMAND StartupShutdown)
 add_test(NAME "API" COMMAND ApiTest)
 add_test(NAME "MultiGroup" COMMAND MultiGroup)
@@ -85,4 +90,5 @@ add_test(NAME "MultiClient" COMMAND MultiClient)
 add_test(NAME "LivenessCheck" COMMAND LivenessCheck)
 add_test(NAME "ClientSimCrash" COMMAND ClientSimCrash)
 add_test(NAME "DataTransfer" COMMAND DataTransfer)
-add_test(NAME "MultiClientLarge" COMMAND MultiClient 10)
+add_test(NAME "ThreadSafety" COMMAND ThreadSafety)
+add_test(NAME "MultiClientLarge" COMMAND MultiClient 30)

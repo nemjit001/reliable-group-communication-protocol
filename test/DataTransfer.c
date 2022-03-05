@@ -10,7 +10,7 @@
 #include "ErrorReport.h"
 
 #define GROUP_NAME "DATA_TRANSFER_TEST"
-#define TEST_BUFFER "DATA TEST 123\0"
+#define TEST_BUFFER "DATA TEST 123"
 
 void* test_thread(void *arg)
 {

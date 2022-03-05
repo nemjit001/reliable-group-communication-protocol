@@ -431,6 +431,24 @@ int rgcp_connect(int sockfd, rgcp_group_info_t group_info)
     return 0;
 }
 
+int rgcp_is_connected(int sockfd)
+{
+    rgcp_socket_t* pSocket = NULL;
+
+    if (rgcp_socket_get(sockfd, &pSocket) < 0)
+    {
+        errno = ENOTSOCK;
+        return -1;
+    }
+
+    pthread_mutex_lock(&pSocket->m_socketMtx);
+
+    int bConnected = pSocket->m_peerData.m_bConnectedToGroup;
+
+    pthread_mutex_unlock(&pSocket->m_socketMtx);
+    return bConnected;
+}
+
 ssize_t rgcp_peer_count(int sockfd)
 {
     rgcp_socket_t* pSocket = NULL;

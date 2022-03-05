@@ -44,6 +44,8 @@ int rgcp_create_group(int sockfd, const char* groupname, size_t namelen);
 
 int rgcp_connect(int sockfd, rgcp_group_info_t group_info);
 
+int rgcp_is_connected(int sockfd);
+
 ssize_t rgcp_peer_count(int sockfd);
 
 int rgcp_disconnect(int sockfd);

@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <string.h>
 #include <poll.h>
+#include <netinet/tcp.h>
 
 #define max(a,b) ( ((a) > (b)) ? (a) : (b) )
 
@@ -276,17 +277,31 @@ int rgcp_socket_connect_to_peer(rgcp_socket_t* pSocket, struct _rgcp_peer_info p
     pConnection->m_bEstablished = 0;
 
     if (connect(pConnection->m_remoteFd, (struct sockaddr*)&peerInfo.m_addressInfo, peerInfo.m_addressLength) < 0)
-    {
-        close(pConnection->m_remoteFd);
-        pthread_mutex_unlock(&pSocket->m_peerData.m_peerMtx);
-        return -1;
-    }
+        goto error;
+
+    int enable = 1;
+    if (setsockopt(pConnection->m_remoteFd, SOL_SOCKET, SO_KEEPALIVE, &enable, sizeof(int)) < 0)
+        goto error;
+
+    if (setsockopt(pConnection->m_remoteFd, IPPROTO_TCP, TCP_KEEPIDLE, &enable, sizeof(int)) < 0)
+        goto error;
+
+    if (setsockopt(pConnection->m_remoteFd, IPPROTO_TCP, TCP_KEEPINTVL, &enable, sizeof(int)) < 0)
+        goto error;
+    
+    if (setsockopt(pConnection->m_remoteFd, IPPROTO_TCP, TCP_KEEPCNT, &enable, sizeof(int)) < 0)
+        goto error;
 
     pConnection->m_bEstablished = 1;
 
     list_add_tail(&pConnection->m_listEntry, &pSocket->m_peerData.m_connectedPeers);
     pthread_mutex_unlock(&pSocket->m_peerData.m_peerMtx);
     return 0;
+
+error:
+    close(pConnection->m_remoteFd);
+    pthread_mutex_unlock(&pSocket->m_peerData.m_peerMtx);
+    return -1;
 }
 
 void* rgcp_socket_helper_thread(void* pSocketInfo)
