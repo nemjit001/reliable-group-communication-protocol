@@ -388,6 +388,7 @@ int rgcp_should_handle_as_helper(enum RGCP_PACKET_TYPE packetType)
     case RGCP_TYPE_GROUP_DISCOVER_RESPONSE:
     case RGCP_TYPE_GROUP_CREATE_RESPONSE:
     case RGCP_TYPE_GROUP_JOIN_RESPONSE:
+    case RGCP_TYPE_GROUP_LEAVE_RESPONSE:
         return 0;
     case RGCP_TYPE_PEER_SHARE:
     case RGCP_TYPE_PEER_REMOVE:

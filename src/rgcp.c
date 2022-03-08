@@ -112,8 +112,17 @@ int rgcp_close(int sockfd)
 
     log_msg("[Lib][%d] Closing, Group Disconnect\n", pSocket->m_RGCPSocketFd);
 
-    if (rgcp_disconnect(sockfd) < 0)
-        goto error;
+    if (pSocket->m_peerData.m_bConnectedToGroup)
+    {
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
+        if (rgcp_disconnect(sockfd) < 0)
+        {
+            pthread_mutex_lock(&pSocket->m_socketMtx);
+            goto error;
+        }
+
+        pthread_mutex_lock(&pSocket->m_socketMtx);
+    }
     
     struct rgcp_packet* pPacket;
     rgcp_packet_init(&pPacket, 0);
@@ -493,6 +502,8 @@ int rgcp_disconnect(int sockfd)
         return -1;
     }
 
+    pthread_mutex_lock(&pSocket->m_socketMtx);
+
     struct rgcp_packet* pPacket;
     rgcp_packet_init(&pPacket, 0);
 
@@ -502,13 +513,44 @@ int rgcp_disconnect(int sockfd)
     if (rgcp_api_send(pSocket->m_middlewareFd, &pSocket->m_apiMtxes.m_sendMtx, pPacket) < 0)
     {
         rgcp_packet_free(pPacket);
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
         return -1;
     }
 
     log_msg("[Lib][%d] Group Disconnect Notice Sent\n", pSocket->m_RGCPSocketFd);
+    rgcp_packet_free(pPacket);
+    pPacket = NULL;
+
+    if (rgcp_helper_recv(pSocket, &pPacket, RGCP_SOCKET_TIMEOUT_MS) < 0)
+    {
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
+        return -1;
+    }
+
+    if (pPacket->m_packetType != RGCP_TYPE_GROUP_LEAVE_RESPONSE || pPacket->m_packetError != RGCP_ERROR_NO_ERROR)
+    {
+        rgcp_packet_free(pPacket);
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
+        return -1;
+    }
+
+    pthread_mutex_lock(&pSocket->m_peerData.m_peerMtx);
+
+    struct list_entry *pCurr, *pNext;
+    LIST_FOR_EACH(pCurr, pNext, &pSocket->m_peerData.m_connectedPeers)
+    {
+        struct _rgcp_peer_connection* pConnection = LIST_ENTRY(pCurr, struct _rgcp_peer_connection, m_listEntry);
+
+        list_del(pCurr);
+        close(pConnection->m_remoteFd);
+        free(pConnection);
+    }
+
+    pthread_mutex_unlock(&pSocket->m_peerData.m_peerMtx);
 
     pSocket->m_peerData.m_bConnectedToGroup = 0;
     rgcp_packet_free(pPacket);
+    pthread_mutex_unlock(&pSocket->m_socketMtx);
     return 0;
 }
 

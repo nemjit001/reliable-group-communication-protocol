@@ -63,6 +63,11 @@ add_executable(MultiGroup
 )
 target_link_libraries(MultiGroup dl rgcp)
 
+add_executable(ConnectDisconnect
+    test/ConnectDisconnect.c
+)
+target_link_libraries(ConnectDisconnect dl rgcp)
+
 add_executable(LivenessCheck
     test/LivenessCheck.c
 )
@@ -87,6 +92,7 @@ add_test(NAME "StartupShutdown" COMMAND StartupShutdown)
 add_test(NAME "API" COMMAND ApiTest)
 add_test(NAME "MultiGroup" COMMAND MultiGroup)
 add_test(NAME "MultiClient" COMMAND MultiClient)
+add_test(NAME "ConnectDisconnect" COMMAND ConnectDisconnect)
 add_test(NAME "LivenessCheck" COMMAND LivenessCheck)
 add_test(NAME "ClientSimCrash" COMMAND ClientSimCrash)
 add_test(NAME "DataTransfer" COMMAND DataTransfer)
