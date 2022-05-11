@@ -14,7 +14,11 @@ void logger_free()
     pthread_mutex_destroy(&g_loggingMtx);
 }
 
+#ifndef NDEBUG
 void log_msg(const char* format, ...)
+#else
+void log_msg(__attribute__((unused)) const char* format, ...)
+#endif
 {
 #ifndef NDEBUG
     pthread_mutex_lock(&g_loggingMtx);

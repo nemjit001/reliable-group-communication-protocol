@@ -143,6 +143,9 @@ int deserialize_rgcp_group_name_info(rgcp_group_info_t* pGroupInfo, uint8_t* pBu
     assert(pGroupInfo);
     assert(bufferSize >= (sizeof(uint32_t) * 2));
 
+    if (!pGroupInfo || !pBuffer || bufferSize < (sizeof(uint32_t) * 2))
+        return -1;
+
     size_t ptrOffset = 0;
     memcpy(&pGroupInfo->m_groupNameHash, pBuffer + ptrOffset, sizeof(uint32_t));
 
@@ -150,6 +153,9 @@ int deserialize_rgcp_group_name_info(rgcp_group_info_t* pGroupInfo, uint8_t* pBu
     memcpy(&pGroupInfo->m_groupNameLength, pBuffer + ptrOffset, sizeof(uint32_t));
 
     assert(bufferSize >= (sizeof(uint32_t) * 2) + pGroupInfo->m_groupNameLength + 1);
+    if (bufferSize < (sizeof(uint32_t) * 2) + pGroupInfo->m_groupNameLength + 1)
+        return -1;
+
     ptrOffset += sizeof(uint32_t);
 
     pGroupInfo->m_pGroupName = NULL;
