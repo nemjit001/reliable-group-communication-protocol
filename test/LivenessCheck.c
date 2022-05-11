@@ -18,7 +18,7 @@ int main()
     if (socket < 0)
         ErrorReport("Socket init failed");
 
-    sleep(70);
+    sleep(RGCP_SOCKET_HEARTBEAT_PERIOD_SECONDS * 3);
 
     rgcp_group_info_t** ppGroupInfos = NULL;
     ssize_t groupCount = rgcp_discover_groups(socket, &ppGroupInfos);
