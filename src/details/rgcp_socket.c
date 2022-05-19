@@ -411,6 +411,8 @@ int rgcp_helper_handle_packet(rgcp_socket_t* pSocket, struct rgcp_packet* pPacke
             if (deserialize_rgcp_peer_info(&info, pPacket->m_data, pPacket->m_dataLen) < 0)
                 return -1;
 
+            log_msg("\t\t[%d] %ld\n", pSocket->m_RGCPSocketFd, info.m_addressInfo.sin_addr.s_addr);
+
             if (rgcp_add_peer(pSocket, info) < 0)
                 return -1;
         }
@@ -446,8 +448,15 @@ int rgcp_add_peer(rgcp_socket_t *pSocket, struct _rgcp_peer_info peerInfo)
     struct _rgcp_peer_connection *pConnection = calloc(1, sizeof(struct _rgcp_peer_connection));
 
     struct sockaddr_in peerAddr;
+    memset(&peerAddr, 0, sizeof(peerAddr));
     socklen_t addrlen = sizeof(peerAddr);
     int peerFd = accept(pSocket->m_listenSocketInfo.m_listenSocket, (struct sockaddr*)&peerAddr, &addrlen);
+
+    if (peerFd < 0)
+    {
+        log_msg("[Lib][%d] Failed to accept incoming connection (errno: %lu)\n", pSocket->m_RGCPSocketFd, errno);
+        return -1;
+    }
 
     char* peerIpAddr = inet_ntoa(peerInfo.m_addressInfo.sin_addr);
 
