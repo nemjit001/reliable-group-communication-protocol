@@ -591,11 +591,19 @@ ssize_t rgcp_send(int sockfd, const char* buf, size_t len, enum RGCP_SEND_FLAGS 
             ssize_t bytesSent = send(pConn->m_remoteFd, &buffSize, sizeof(buffSize), 0);
             
             if (bytesSent < 0)
+            {
+                log_msg("[Lib][%d] Failed to send buffer size to peer %d\n", pSocket->m_RGCPSocketFd, pConn->m_remoteFd);
                 continue;
+            }
 
             bytesSent += send(pConn->m_remoteFd, buf, len, 0);
             if (bytesSent < 0)
+            {
+                log_msg("[Lib][%d] Failed to send data buffer to peer %d\n", pSocket->m_RGCPSocketFd, pConn->m_remoteFd);
                 continue;
+            }
+
+            log_msg("[Lib][%d] Sent buffer (%lu bytes) to peer %d\n", pSocket->m_RGCPSocketFd, buffSize, pConn->m_remoteFd);
 
             totalBytesSent += bytesSent;
         }
@@ -675,6 +683,8 @@ ssize_t rgcp_recv(int sockfd, rgcp_recv_data_t** ppRecvDataList)
             pData->m_bufferSize = bufflen;
             pData->m_pDataBuffer = calloc(bufflen, sizeof(uint8_t));
             pData->m_sourceFd = pollFds[i].fd;
+
+            log_msg("[Lib][%d] Read buffer (%lu bytes, peer %d)\n", pSocket->m_RGCPSocketFd, bufflen, pollFds[i].fd);
 
             memcpy(pData->m_pDataBuffer, pBuff, bufflen);
             free(pBuff);
