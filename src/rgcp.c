@@ -666,27 +666,37 @@ ssize_t rgcp_recv(int sockfd, rgcp_recv_data_t** ppRecvDataList)
     {
         if (pollFds[i].revents & POLLIN)
         {
-            uint32_t bufflen = 0;
-            if (recv(pollFds[i].fd, &bufflen, sizeof(uint32_t), 0) < 0)
+            uint32_t expectedBufflen = 0;
+            if (recv(pollFds[i].fd, &expectedBufflen, sizeof(uint32_t), 0) <= 0)
                 continue;
 
-            uint8_t* pBuff = calloc(bufflen, sizeof(uint8_t));
-            if (recv(pollFds[i].fd, pBuff, bufflen, 0) < 0)
+            log_msg("[Lib] Expect %lu bytes from peer %d (poll return: %u)\n", expectedBufflen, pollFds[i].fd, pollFds[i].revents);
+
+            uint8_t* pBuff = calloc(expectedBufflen, sizeof(uint8_t));
+            ssize_t recvd_bytes = 0;
+            do
             {
-                free(pBuff);
-                continue;
-            }
+                ssize_t recv_res = recv(pollFds[i].fd, pBuff + recvd_bytes, expectedBufflen - recvd_bytes, 0);
+
+                if (recv_res < 0)
+                {
+                    free(pBuff);
+                    continue;
+                }
+
+                recvd_bytes += recv_res;
+            } while(recvd_bytes != expectedBufflen);
 
             dataCount++;
             (*ppRecvDataList) = realloc((*ppRecvDataList), sizeof(rgcp_recv_data_t) * dataCount);
             rgcp_recv_data_t *pData = &((*ppRecvDataList)[dataCount - 1]);
-            pData->m_bufferSize = bufflen;
-            pData->m_pDataBuffer = calloc(bufflen, sizeof(uint8_t));
+            pData->m_bufferSize = expectedBufflen;
+            pData->m_pDataBuffer = calloc(expectedBufflen, sizeof(uint8_t));
             pData->m_sourceFd = pollFds[i].fd;
 
-            log_msg("[Lib][%d] Read buffer (%lu bytes, peer %d)\n", pSocket->m_RGCPSocketFd, bufflen, pollFds[i].fd);
+            log_msg("[Lib][%d] Read buffer (%lu bytes, peer %d)\n", pSocket->m_RGCPSocketFd, expectedBufflen, pollFds[i].fd);
 
-            memcpy(pData->m_pDataBuffer, pBuff, bufflen);
+            memcpy(pData->m_pDataBuffer, pBuff, expectedBufflen);
             free(pBuff);
         }
     }
