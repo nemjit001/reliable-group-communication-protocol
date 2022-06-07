@@ -554,7 +554,7 @@ int rgcp_disconnect(int sockfd)
     return 0;
 }
 
-ssize_t rgcp_send(int sockfd, const char* buf, size_t len, enum RGCP_SEND_FLAGS flags)
+ssize_t rgcp_send(int sockfd, const void* buf, size_t len, enum RGCP_SEND_FLAGS flags)
 {
     rgcp_socket_t* pSocket = NULL;
 

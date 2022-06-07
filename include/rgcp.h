@@ -50,7 +50,7 @@ ssize_t rgcp_peer_count(int sockfd);
 
 int rgcp_disconnect(int sockfd);
 
-ssize_t rgcp_send(int sockfd, const char* buf, size_t len, enum RGCP_SEND_FLAGS flags);
+ssize_t rgcp_send(int sockfd, const void* buf, size_t len, enum RGCP_SEND_FLAGS flags);
 
 ssize_t rgcp_recv(int sockfd, rgcp_recv_data_t** pp_recvdatalist);
 
