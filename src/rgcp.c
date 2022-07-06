@@ -10,6 +10,12 @@
 #include <string.h>
 #include <poll.h>
 
+struct _rgcp_peer_buffer_data
+{
+    int m_fd;
+    uint32_t m_bufferOffset;
+};
+
 int _share_host_info(rgcp_socket_t* pSocket)
 {
     struct _rgcp_peer_info hostInfo;
@@ -273,7 +279,7 @@ int rgcp_free_group_infos(rgcp_group_info_t*** ppp_group_infos, ssize_t group_co
     log_msg("[Lib] Freeing group info array (%d info(s))\n", group_count);
     for (ssize_t i = 0; i < group_count; i++)
     {
-        log_msg("\t[ #%d @ %p ]\n", i, &(*ppp_group_infos));
+        log_msg("\t[ #%d @ %p ]\n", i, &(*ppp_group_infos)[i]);
         free((*ppp_group_infos)[i]->m_pGroupName);
         free((*ppp_group_infos)[i]);
     }
@@ -554,7 +560,7 @@ int rgcp_disconnect(int sockfd)
     return 0;
 }
 
-ssize_t rgcp_send(int sockfd, const void* buf, size_t len, enum RGCP_SEND_FLAGS flags)
+ssize_t rgcp_send(int sockfd, const void* buf, size_t len, enum RGCP_SEND_FLAGS flags, void* p_params)
 {
     rgcp_socket_t* pSocket = NULL;
 
@@ -573,43 +579,171 @@ ssize_t rgcp_send(int sockfd, const void* buf, size_t len, enum RGCP_SEND_FLAGS 
         pthread_mutex_unlock(&pSocket->m_peerData.m_peerMtx);
         return 0;
     }
+    
+    log_msg("[Lib][%d] Flags: %d, Params: %p\n", pSocket->m_RGCPSocketFd, flags, p_params);
 
     ssize_t totalBytesSent = 0;
 
-    if (flags & RGCP_SEND_BROADCAST || flags == 0)
+    if ((flags & RGCP_SEND_BROADCAST) || flags == 0)
     {
-        struct list_entry *pCurr, *pNext;
+
+        struct _rgcp_peer_buffer_data *pAvailConnections = NULL;
+        ssize_t connectionCount = 0;
+        struct list_entry* pCurr, *pNext;
         LIST_FOR_EACH(pCurr, pNext, &pSocket->m_peerData.m_connectedPeers)
         {
-            struct _rgcp_peer_connection *pConn = LIST_ENTRY(pCurr, struct _rgcp_peer_connection, m_listEntry);
-            assert(pConn);
-            
+            struct _rgcp_peer_connection* pConn = LIST_ENTRY(pCurr, struct _rgcp_peer_connection, m_listEntry);
+            if (pConn->m_bEstablished)
+                connectionCount++;
+        }
+
+        if (connectionCount <= 0)
+            return 0;
+
+        pAvailConnections = (struct _rgcp_peer_buffer_data*)calloc(connectionCount, sizeof(struct _rgcp_peer_buffer_data));
+        pCurr = pNext = NULL;
+
+        ssize_t idx = 0;
+        LIST_FOR_EACH(pCurr, pNext, &pSocket->m_peerData.m_connectedPeers)
+        {
+            struct _rgcp_peer_connection* pConn = LIST_ENTRY(pCurr, struct _rgcp_peer_connection, m_listEntry);
             if (!pConn->m_bEstablished)
                 continue;
 
-            uint32_t buffSize = (uint32_t)len;
-            ssize_t bytesSent = send(pConn->m_remoteFd, &buffSize, sizeof(buffSize), 0);
-            
-            if (bytesSent < 0)
-            {
-                log_msg("[Lib][%d] Failed to send buffer size to peer %d\n", pSocket->m_RGCPSocketFd, pConn->m_remoteFd);
-                continue;
-            }
-
-            bytesSent += send(pConn->m_remoteFd, buf, len, 0);
-            if (bytesSent < 0)
-            {
-                log_msg("[Lib][%d] Failed to send data buffer to peer %d\n", pSocket->m_RGCPSocketFd, pConn->m_remoteFd);
-                continue;
-            }
-
-            log_msg("[Lib][%d] Sent buffer (%lu bytes) to peer %d\n", pSocket->m_RGCPSocketFd, buffSize, pConn->m_remoteFd);
-
-            totalBytesSent += bytesSent;
+            pAvailConnections[idx].m_fd = pConn->m_remoteFd;
+            pAvailConnections[idx].m_bufferOffset = 0;
+            idx++;
         }
+
+        uint32_t buffSize = (uint32_t)len;
+        for (ssize_t i = 0; i < connectionCount; i++)
+        {
+            if (send(pAvailConnections[i].m_fd, &buffSize, sizeof(buffSize), 0) < 0)
+                pAvailConnections[i].m_fd = -1;
+        }
+
+        int bComplete = 0;
+        while(!bComplete)
+        {
+            for (ssize_t i = 0; i < connectionCount; i++)
+            {
+                if (pAvailConnections[i].m_fd == -1)
+                    continue;
+                
+                size_t residualSize = len - pAvailConnections[i].m_bufferOffset;
+                assert(residualSize <= len);
+
+                if (residualSize == 0)
+                    continue;
+
+                void *pBuffPtr = (void*)((uintptr_t)buf + (uintptr_t)pAvailConnections[i].m_bufferOffset);
+                ssize_t bytesSent = send(pAvailConnections[i].m_fd, pBuffPtr, residualSize, MSG_DONTWAIT);
+
+                if (bytesSent < 0)
+                {
+                    if (errno == EAGAIN || EWOULDBLOCK)
+                        break;
+
+                    if (errno == EBADF)
+                    {
+                        pAvailConnections[i].m_fd = -1;
+                        continue;
+                    }
+                }
+
+                pAvailConnections[i].m_bufferOffset += bytesSent;
+                totalBytesSent += bytesSent;
+                log_msg("[Lib][%d] Sent %lu/%lu bytes to peer %d\n", pSocket->m_RGCPSocketFd, pAvailConnections[i].m_bufferOffset, len, pAvailConnections[i].m_fd);
+            }
+
+            bComplete = 1;
+            for (ssize_t i = 0; i < connectionCount; i++)
+                bComplete = bComplete && ((pAvailConnections[i].m_bufferOffset == len) && pAvailConnections[i].m_fd != -1);
+        }
+
+        log_msg("[Lib][%d] Broadcast Done\n", pSocket->m_RGCPSocketFd);
+    }
+    else if (flags & RGCP_SEND_UNICAST)
+    {
+        log_msg("[Lib][%d] Starting Unicast\n", pSocket->m_RGCPSocketFd);
+
+        if (!p_params)
+        {
+            log_msg("[Lib][%d] No parameters passed with Unicast\n", pSocket->m_RGCPSocketFd);
+
+            pthread_mutex_unlock(&pSocket->m_peerData.m_peerMtx);
+            pthread_mutex_unlock(&pSocket->m_socketMtx);
+            return -1;
+        }
+
+        rgcp_unicast_mask_t *pUnicastMask = ((rgcp_unicast_mask_t*)p_params);
+        int target_fd = -1;
+
+        struct list_entry *pCurr, *pNext;
+        LIST_FOR_EACH(pCurr, pNext, &pSocket->m_peerData.m_connectedPeers)
+        {
+            struct _rgcp_peer_connection* pConn = LIST_ENTRY(pCurr, struct _rgcp_peer_connection, m_listEntry);
+            assert(pConn);
+
+            if (!pConn->m_bEstablished)
+                continue;
+            
+            if (pConn->m_remoteFd == pUnicastMask->m_targetFd)
+            {
+                target_fd = pConn->m_remoteFd;
+                break;
+            }
+        }
+
+        if (target_fd == -1)
+        {
+            pthread_mutex_unlock(&pSocket->m_peerData.m_peerMtx);
+            pthread_mutex_unlock(&pSocket->m_socketMtx);
+            return -1;
+        }
+
+        printf("[Lib][%d] Sending to peer %d\n", pSocket->m_RGCPSocketFd, target_fd);
+        
+        uint32_t bufferSize = (uint32_t)len;
+        size_t byteOffset = 0;
+
+        if (send(target_fd, &bufferSize, sizeof(bufferSize), 0) < 0)
+        {
+            pthread_mutex_unlock(&pSocket->m_peerData.m_peerMtx);
+            pthread_mutex_unlock(&pSocket->m_socketMtx);
+            return -1;
+        }
+        
+        while (byteOffset < len)
+        {
+            void* pBuffPtr = (void*)((uintptr_t)buf + (uintptr_t)byteOffset);
+            size_t residualSize = len - byteOffset;
+            assert(residualSize <= len);
+
+            ssize_t fragmentSize = send(target_fd, pBuffPtr, residualSize, MSG_DONTWAIT);
+
+            if (fragmentSize < 0)
+            {
+                if (errno == EWOULDBLOCK || errno == EAGAIN)
+                {
+                    log_msg("[Lib][%d] Peer %d send is blocking on bytes %lu/%lu\n", pSocket->m_RGCPSocketFd, target_fd, byteOffset, len);
+                    continue;
+                }
+
+                break;
+            }
+
+            byteOffset += fragmentSize;
+            log_msg("[Lib][%d] Sent %lu/%lu bytes to peer %d (Unicast)\n", pSocket->m_RGCPSocketFd, byteOffset, len, target_fd);
+        }
+
+        totalBytesSent = byteOffset;
+        log_msg("[Lib][%d] Unicast Done\n", pSocket->m_RGCPSocketFd);
     }
     else
     {
+        printf("[Lib][%d] Invalid flags passed to rgcp_send\n", pSocket->m_RGCPSocketFd);
+
         errno = ENOTSUP;
         pthread_mutex_unlock(&pSocket->m_peerData.m_peerMtx);
         pthread_mutex_unlock(&pSocket->m_socketMtx);
@@ -633,6 +767,13 @@ ssize_t rgcp_recv(int sockfd, rgcp_recv_data_t** ppRecvDataList)
 
     pthread_mutex_lock(&pSocket->m_socketMtx);
     pthread_mutex_lock(&pSocket->m_peerData.m_peerMtx);
+
+    if (!pSocket->m_peerData.m_bConnectedToGroup)
+    {
+        pthread_mutex_unlock(&pSocket->m_socketMtx);
+        pthread_mutex_unlock(&pSocket->m_peerData.m_peerMtx);
+        return -1;
+    }
 
     ssize_t fdCount = 0;
     struct pollfd* pollFds = NULL;
@@ -665,40 +806,78 @@ ssize_t rgcp_recv(int sockfd, rgcp_recv_data_t** ppRecvDataList)
     for (ssize_t i = 0; i < fdCount; i++)
     {
         if (pollFds[i].revents & POLLIN)
+            dataCount++;
+    }
+
+    struct _rgcp_peer_buffer_data* pAvailFds = (struct _rgcp_peer_buffer_data*)calloc(dataCount, sizeof(struct _rgcp_peer_buffer_data));
+    *ppRecvDataList = (rgcp_recv_data_t*)calloc(dataCount, sizeof(rgcp_recv_data_t));
+
+    for (ssize_t i = 0, recvDataIdx = 0; i < fdCount; i++)
+    {
+        if (pollFds[i].revents & POLLIN)
         {
             uint32_t expectedBufflen = 0;
-            if (recv(pollFds[i].fd, &expectedBufflen, sizeof(uint32_t), 0) <= 0)
+
+            if (recv(pollFds[i].fd, &expectedBufflen, sizeof(expectedBufflen), 0) <= 0)
+            {
+                (*ppRecvDataList)[recvDataIdx].m_bufferSize = 0;
+                (*ppRecvDataList)[recvDataIdx].m_pDataBuffer = NULL;
+                (*ppRecvDataList)[recvDataIdx].m_sourceFd = pollFds[i].fd;
+            }
+            else
+            {
+                (*ppRecvDataList)[recvDataIdx].m_bufferSize = expectedBufflen;
+                (*ppRecvDataList)[recvDataIdx].m_pDataBuffer = calloc(expectedBufflen, sizeof(uint8_t));
+                (*ppRecvDataList)[recvDataIdx].m_sourceFd = pollFds[i].fd;
+            }
+
+            pAvailFds[recvDataIdx].m_fd = pollFds[i].fd;
+            pAvailFds[recvDataIdx].m_bufferOffset = 0;
+            recvDataIdx++;
+        }
+    }
+
+    int bComplete = 0;
+    while (!bComplete)
+    {
+        for (ssize_t i = 0; i < dataCount; i++)
+        {
+            if (pAvailFds[i].m_fd == -1)
                 continue;
 
-            log_msg("[Lib] Expect %lu bytes from peer %d (poll return: %u)\n", expectedBufflen, pollFds[i].fd, pollFds[i].revents);
+            size_t residualSize = (*ppRecvDataList)[i].m_bufferSize - pAvailFds[i].m_bufferOffset;
+            void* pBuffPtr = (void*)((uintptr_t)((*ppRecvDataList)[i].m_pDataBuffer) + (uintptr_t)(pAvailFds[i].m_bufferOffset));
 
-            uint8_t* pBuff = calloc(expectedBufflen, sizeof(uint8_t));
-            ssize_t recvd_bytes = 0;
-            do
+            if (residualSize == 0)
+                continue;
+
+            ssize_t recvd_bytes = recv(pAvailFds[i].m_fd, pBuffPtr, residualSize, MSG_DONTWAIT);
+
+            if (recvd_bytes < 0)
             {
-                ssize_t recv_res = recv(pollFds[i].fd, pBuff + recvd_bytes, expectedBufflen - recvd_bytes, 0);
-
-                if (recv_res < 0)
+                if (errno == EWOULDBLOCK || errno == EAGAIN)
                 {
-                    free(pBuff);
-                    continue;
+                    log_msg("[Lib][%d] Peer %d receive is blocking on bytes %lu/%lu\n", pSocket->m_RGCPSocketFd, pAvailFds[i].m_fd, pAvailFds[i].m_bufferOffset, (*ppRecvDataList[i]).m_bufferSize);
+                    break;
                 }
+                
+                pAvailFds[i].m_fd = -1;
+                (*ppRecvDataList)[i].m_bufferSize = pAvailFds[i].m_bufferOffset;
+                void* pTemp = realloc((*ppRecvDataList)[i].m_pDataBuffer, pAvailFds[i].m_bufferOffset * sizeof(uint8_t));
+                memcpy(pTemp, (*ppRecvDataList)[i].m_pDataBuffer, pAvailFds[i].m_bufferOffset * sizeof(uint8_t));
+                free((*ppRecvDataList)[i].m_pDataBuffer);
+                (*ppRecvDataList)[i].m_pDataBuffer = pTemp;
 
-                recvd_bytes += recv_res;
-            } while(recvd_bytes != expectedBufflen);
+                continue;
+            }
 
-            dataCount++;
-            (*ppRecvDataList) = realloc((*ppRecvDataList), sizeof(rgcp_recv_data_t) * dataCount);
-            rgcp_recv_data_t *pData = &((*ppRecvDataList)[dataCount - 1]);
-            pData->m_bufferSize = expectedBufflen;
-            pData->m_pDataBuffer = calloc(expectedBufflen, sizeof(uint8_t));
-            pData->m_sourceFd = pollFds[i].fd;
-
-            log_msg("[Lib][%d] Read buffer (%lu bytes, peer %d)\n", pSocket->m_RGCPSocketFd, expectedBufflen, pollFds[i].fd);
-
-            memcpy(pData->m_pDataBuffer, pBuff, expectedBufflen);
-            free(pBuff);
+            pAvailFds[i].m_bufferOffset += recvd_bytes;
+            log_msg("[Lib][%d] Received %lu/%lu bytes [%d]\n", pSocket->m_RGCPSocketFd, recvd_bytes, (*ppRecvDataList)[i].m_bufferSize, (*ppRecvDataList)[i].m_sourceFd);
         }
+
+        bComplete = 1;
+        for (ssize_t i = 0; i < dataCount; i++)
+            bComplete = bComplete && ((pAvailFds[i].m_bufferOffset == (*ppRecvDataList)[i].m_bufferSize) && pAvailFds[i].m_fd != -1);
     }
 
     free(pollFds);

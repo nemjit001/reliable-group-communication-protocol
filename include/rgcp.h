@@ -13,7 +13,8 @@
 
 enum RGCP_SEND_FLAGS
 {
-    RGCP_SEND_BROADCAST = 1
+    RGCP_SEND_BROADCAST = 1,
+    RGCP_SEND_UNICAST   = 2
 };
 
 typedef struct _rgcp_recv_data_t
@@ -22,6 +23,11 @@ typedef struct _rgcp_recv_data_t
     size_t m_bufferSize;
     uint8_t* m_pDataBuffer;
 } rgcp_recv_data_t;
+
+typedef struct _rgcp_unicast_mask_t
+{
+    int m_targetFd;
+} rgcp_unicast_mask_t;
 
 struct _rgcp_group_info_t
 {
@@ -50,7 +56,7 @@ ssize_t rgcp_peer_count(int sockfd);
 
 int rgcp_disconnect(int sockfd);
 
-ssize_t rgcp_send(int sockfd, const void* buf, size_t len, enum RGCP_SEND_FLAGS flags);
+ssize_t rgcp_send(int sockfd, const void* buf, size_t len, enum RGCP_SEND_FLAGS flags, void* p_params);
 
 ssize_t rgcp_recv(int sockfd, rgcp_recv_data_t** pp_recvdatalist);
 

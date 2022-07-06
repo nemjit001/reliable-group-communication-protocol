@@ -66,7 +66,7 @@ void* test_thread(void *arg)
         return retval;
     }
     
-    if (rgcp_send(fd, TEST_BUFFER, strlen(TEST_BUFFER) + 1, RGCP_SEND_BROADCAST) < 0)
+    if (rgcp_send(fd, TEST_BUFFER, strlen(TEST_BUFFER) + 1, RGCP_SEND_BROADCAST, NULL) < 0)
     {
         rgcp_free_group_infos(&ppGroups, groupCount);
         rgcp_close(fd);
