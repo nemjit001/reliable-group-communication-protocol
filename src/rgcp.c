@@ -702,7 +702,7 @@ ssize_t rgcp_send(int sockfd, const void* buf, size_t len, enum RGCP_SEND_FLAGS 
             return -1;
         }
 
-        printf("[Lib][%d] Sending to peer %d\n", pSocket->m_RGCPSocketFd, target_fd);
+        log_msg("[Lib][%d] Sending to peer %d\n", pSocket->m_RGCPSocketFd, target_fd);
         
         uint32_t bufferSize = (uint32_t)len;
 
@@ -724,7 +724,7 @@ ssize_t rgcp_send(int sockfd, const void* buf, size_t len, enum RGCP_SEND_FLAGS 
     }
     else
     {
-        printf("[Lib][%d] Invalid flags passed to rgcp_send\n", pSocket->m_RGCPSocketFd);
+        log_msg("[Lib][%d] Invalid flags passed to rgcp_send\n", pSocket->m_RGCPSocketFd);
 
         errno = ENOTSUP;
         pthread_mutex_unlock(&pSocket->m_peerData.m_peerMtx);
