@@ -841,15 +841,18 @@ ssize_t rgcp_recv(int sockfd, rgcp_recv_data_t** ppRecvDataList)
             {
                 if (errno == EWOULDBLOCK || errno == EAGAIN)
                 {
-                    log_msg("[Lib][%d] Peer %d receive is blocking on bytes %lu/%lu\n", pSocket->m_RGCPSocketFd, pAvailFds[i].m_fd, pAvailFds[i].m_bufferOffset, (*ppRecvDataList[i]).m_bufferSize);
+                    log_msg("[Lib][%d] Peer %d receive is blocking on bytes %lu/%lu\n", pSocket->m_RGCPSocketFd, pAvailFds[i].m_fd, pAvailFds[i].m_bufferOffset, (*ppRecvDataList)[i].m_bufferSize);
                     break;
                 }
                 
                 log_msg("[Lib][%d] Peer %d has become invalid\n", pAvailFds[i].m_fd);
+
                 pAvailFds[i].m_fd = -1;
                 (*ppRecvDataList)[i].m_bufferSize = pAvailFds[i].m_bufferOffset;
+                
                 void* pTemp = realloc((*ppRecvDataList)[i].m_pDataBuffer, pAvailFds[i].m_bufferOffset * sizeof(uint8_t));
                 memcpy(pTemp, (*ppRecvDataList)[i].m_pDataBuffer, pAvailFds[i].m_bufferOffset * sizeof(uint8_t));
+
                 free((*ppRecvDataList)[i].m_pDataBuffer);
                 (*ppRecvDataList)[i].m_pDataBuffer = pTemp;
 
