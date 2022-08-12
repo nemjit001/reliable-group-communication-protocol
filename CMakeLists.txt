@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
-project(rgcp VERSION 1.0.1 DESCRIPTION "RGCP networking library")
+project(rgcp VERSION 1.1.0 DESCRIPTION "RGCP networking library")
 include(GNUInstallDirs)
+include(CTest)
 
 set(TARGET_NAME rgcp)
 
@@ -10,6 +11,11 @@ set(PROJECT_SOURCE_DIR ${CMAKE_SOURCE_DIR}/src)
 set(LIBRARY_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/lib/)
 
 add_library(${TARGET_NAME} SHARED
+    src/details/logger.c
+    src/details/rgcp_peer.c
+    src/details/rgcp_group.c
+    src/details/rgcp_socket.c
+    src/rgcp_api.c
     src/rgcp.c
 )
 
@@ -23,7 +29,7 @@ target_link_libraries(${TARGET_NAME} dl)
 set_target_properties(${TARGET_NAME} PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION 1
-    PUBLIC_HEADER include/rgcp.h
+    PUBLIC_HEADER "include/rgcp.h;include/rgcp_api.h;include/rgcp_group.h;include/rgcp_peer.h;include/rgcp_crc32.h"
 )
 
 target_include_directories(${TARGET_NAME} PRIVATE src)
@@ -31,5 +37,64 @@ target_include_directories(${TARGET_NAME} PRIVATE include)
 
 install(TARGETS ${TARGET_NAME}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rgcp/
 )
+
+# Testing Setup
+set(EXECUTABLE_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/bin/)
+
+add_executable(ApiTest
+    test/ApiTest.c
+)
+target_link_libraries(ApiTest dl rgcp)
+
+add_executable(StartupShutdown
+    test/StartupShutdown.c
+)
+target_link_libraries(StartupShutdown dl rgcp)
+
+add_executable(MultiClient
+    test/MultiClient.c
+)
+target_link_libraries(MultiClient dl rgcp)
+
+add_executable(MultiGroup
+    test/MultiGroup.c
+)
+target_link_libraries(MultiGroup dl rgcp)
+
+add_executable(ConnectDisconnect
+    test/ConnectDisconnect.c
+)
+target_link_libraries(ConnectDisconnect dl rgcp)
+
+add_executable(LivenessCheck
+    test/LivenessCheck.c
+)
+target_link_libraries(LivenessCheck dl rgcp)
+
+add_executable(ClientSimCrash
+    test/ClientSimCrash.c
+)
+target_link_libraries(ClientSimCrash dl rgcp)
+
+add_executable(DataTransfer
+    test/DataTransfer.c
+)
+target_link_libraries(DataTransfer dl rgcp)
+
+add_executable(ThreadSafety
+    test/ThreadSafety.c
+)
+target_link_libraries(ThreadSafety dl rgcp)
+
+add_test(NAME "StartupShutdown" COMMAND StartupShutdown)
+add_test(NAME "API" COMMAND ApiTest)
+add_test(NAME "MultiGroup" COMMAND MultiGroup)
+add_test(NAME "MultiClient" COMMAND MultiClient)
+add_test(NAME "ConnectDisconnect" COMMAND ConnectDisconnect)
+add_test(NAME "LivenessCheck" COMMAND LivenessCheck)
+add_test(NAME "ClientSimCrash" COMMAND ClientSimCrash)
+add_test(NAME "DataTransfer" COMMAND DataTransfer)
+add_test(NAME "ThreadSafety" COMMAND ThreadSafety)
+add_test(NAME "MultiClientLarge" COMMAND MultiClient 30)

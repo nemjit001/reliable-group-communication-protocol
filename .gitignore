@@ -2,8 +2,12 @@
 build/
 CMakeFiles/
 lib/
+bin/
+Testing/
 
 cmake_install.cmake
+CTestTestfile.cmake
+DartConfiguration.tcl
 CMakeCache.txt
 install_manifest.txt
 Makefile
