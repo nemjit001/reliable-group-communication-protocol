@@ -4,4 +4,4 @@ Designed and implemented as a Bachelor's Thesis for the VU Amsterdam.
 
 ## Author
 
-<!--  -->
+Tijmen Menno Verhoef
