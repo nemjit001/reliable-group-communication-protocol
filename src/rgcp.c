@@ -451,10 +451,7 @@ int rgcp_is_connected(int sockfd)
     rgcp_socket_t* pSocket = NULL;
 
     if (rgcp_socket_get(sockfd, &pSocket) < 0)
-    {
-        errno = ENOTSOCK;
-        return -1;
-    }
+        return 0;
 
     pthread_mutex_lock(&pSocket->m_socketMtx);
 

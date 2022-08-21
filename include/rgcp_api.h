@@ -37,7 +37,7 @@ struct rgcp_packet
     enum RGCP_PACKET_TYPE m_packetType;
     enum RGCP_PACKET_ERROR m_packetError;
     uint32_t m_packetHash;
-    size_t m_dataLen;
+    uint32_t m_dataLen;
     uint8_t m_data[];
 } __attribute__((packed));
 
