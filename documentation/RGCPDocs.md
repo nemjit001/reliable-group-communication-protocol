@@ -10,6 +10,31 @@ A separate middleware service is required to use RGCP. This middleware service h
 creation, deletion, join, and leave request. These requests are handled in the order in which
 they come in.
 
+## Including the library in your project
+
+The RGCP library is a dynamic library. It can be linked using during
+compile time by the name `rgcp`.
+
+To use the RGCP API functions, only the following header file needs
+to be included:
+
+```C
+<rgcp/rgcp.h>
+```
+
+There are more header files available, these expose functions and
+structures that are helpful for developing custom middleware
+implementations.
+
+These are the following header files:
+
+```C
+<rgcp/rgcp_api.h>   // API defines for middleware communication
+<rgcp/rgcp_crc32.h> // The crc32 implementation used by RGCP
+<rgcp/rgcp_group.h> // Group structures and (de)serialization helpers
+<rgcp/rgcp_peer.h>  // Peer structures and (de)serialization helpers
+```
+
 ## RGCP Defines
 
 All RGCP defines can be configured by defining them before including the
@@ -70,6 +95,10 @@ The `rgcp_group_info_t` structure contains a group name, the length of the
 name string, and the hash of the group name.
 
 ## RGCP API functions
+
+Listed below are all available RGCP API functions, grouped by their use.
+All RGCP API functions are threadsafe, and no functions will block
+indefinitely.
 
 ### Socket creation and deletion
 
