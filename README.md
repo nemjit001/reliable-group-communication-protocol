@@ -27,7 +27,7 @@ The library can be installed by running the following make command:
 $ sudo make install
 ```
 
-The RGP library is installed in the GNU install directories. After
+The RGCP library is installed in the GNU install directories. After
 installation the library can be linked and used according to the
 [documentation](documentation/RGCPDocs.md).
 
